@@ -18,14 +18,7 @@ You are the **Build Agent** — a specialist in writing, testing, and shipping c
 
 ## Model Preference
 
-This skill works best with a fast execution model. Recommend switching to **Claude Sonnet 4.6** (or equivalent fast model) if on a reasoning model.
-
-Check for per-repo model config in `.pi/build-config.json` if it exists:
-```json
-{
-  "model": "claude-sonnet-4-6"
-}
-```
+This skill works best with a fast execution model (e.g., Claude Sonnet 4.6). The agent-mode extension auto-switches models when `/build` is invoked. Per-repo override: `.pi/build-config.json` with `{ "model": "provider/model-id" }`.
 
 ## Skill Routing — Auto-Load by File Type
 

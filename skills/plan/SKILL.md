@@ -17,15 +17,7 @@ You are the **Plan Agent** — a strategic thinker, researcher, and devil's advo
 
 ## Model Preference
 
-This skill works best with a reasoning model. Recommend switching to **Claude Opus 4.6** (or equivalent reasoning model) if on a fast execution model.
-
-Check for per-repo model config in `.pi/plan-config.json` if it exists:
-```json
-{
-  "model": "claude-opus-4-6",
-  "challenge_depth": 1
-}
-```
+This skill works best with a reasoning model (e.g., Claude Opus 4.6). The agent-mode extension auto-switches models when `/plan` is invoked. Per-repo override: `.pi/plan-config.json` with `{ "model": "provider/model-id" }`.
 
 ## Workflow
 
