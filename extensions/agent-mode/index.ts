@@ -200,6 +200,7 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 						"info",
 					);
 					persistState();
+					updateModeUI(ctx, targetMode);
 					return { action: "continue" as const };
 				}
 			}
@@ -239,23 +240,42 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 		}
 
 		persistState();
+		updateModeUI(ctx, targetMode);
 		return { action: "continue" as const };
 	});
 
-	// ── Status display ────────────────────────────────────────────────
+	// ── TUI indicators ────────────────────────────────────────────────
 
-	// Show current mode in footer when active
+	// AIDEV-NOTE: Orange (ANSI 208) for plan, Blue (ANSI 33) for build — matches OpenCode.
+	const MODE_COLORS: Record<AgentMode, number> = { plan: 208, build: 33 };
+	const MODE_ICONS: Record<AgentMode, string> = { plan: "🧠", build: "⚡" };
+	const ansi = (code: number, text: string) => `\x1b[38;5;${code}m${text}\x1b[0m`;
+
+	function updateModeUI(ctx: ExtensionContext, mode: AgentMode | null) {
+		if (!mode) {
+			ctx.ui.setStatus("agent-mode", undefined);
+			ctx.ui.setWidget("agent-mode", undefined);
+			return;
+		}
+
+		const color = MODE_COLORS[mode];
+		const icon = MODE_ICONS[mode];
+		const mem = state.models[mode];
+		const modelName = mem ? mem.modelId : "default";
+		const thinking = mem?.thinkingLevel ?? "";
+
+		// Footer status
+		ctx.ui.setStatus("agent-mode", ansi(color, `${icon} ${mode}`));
+
+		// Widget above editor
+		const label = ansi(color, `${icon} ${mode.toUpperCase()}`);
+		const detail = `\x1b[38;5;245m${modelName}${thinking ? " · thinking: " + thinking : ""}\x1b[0m`;
+		ctx.ui.setWidget("agent-mode", [`${label}  ${detail}`]);
+	}
+
+	// Restore UI on session start
 	pi.on("session_start", async (_event, ctx) => {
-		if (state.currentMode) {
-			ctx.ui.setStatus("agent-mode", `mode: ${state.currentMode}`);
-		}
-	});
-
-	pi.on("input", async (event, ctx) => {
-		const text = event.text.trim();
-		if (text.startsWith("/plan") || text.startsWith("/build")) {
-			const mode = text.startsWith("/plan") ? "plan" : "build";
-			ctx.ui.setStatus("agent-mode", `mode: ${mode}`);
-		}
+		// Runs after state restoration (earlier handler)
+		setTimeout(() => updateModeUI(ctx, state.currentMode), 0);
 	});
 }
