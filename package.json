@@ -29,7 +29,6 @@
       "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
       "./node_modules/@sting8k/pi-vcc/index.ts",
       "./node_modules/@tomooshi/caveman-milk-pi/index.ts",
-      "./node_modules/@gtheys/pi-per-commit-spend/index.ts",
       "./node_modules/graphify-pi/extensions/graphify.ts"
     ],
     "skills": [
