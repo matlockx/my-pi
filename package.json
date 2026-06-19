@@ -20,7 +20,6 @@
       "./extensions/context.ts",
       "./extensions/review/review.ts",
       "./extensions/tool-pills/index.ts",
-      "./extensions/leader-key/index.ts",
       "./extensions/desktop-notify/index.ts",
       "./extensions/memory/index.ts",
     "./extensions/agent-mode/index.ts",
