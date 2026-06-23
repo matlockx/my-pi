@@ -28,7 +28,7 @@ This skill works best with a reasoning model (e.g., Claude Opus 4.6). The agent-
    - `/skill:codebase-locator` patterns for finding files
    - `/skill:codebase-analyzer` patterns for understanding code
    - `/skill:codebase-pattern-finder` patterns for finding similar implementations
-   - Search for `AIDEV-*` anchors in relevant directories
+   - Search for `DEV-*` anchors in relevant directories
    - Use `sem_context`, `sem_impact`, `search_graph`, `trace_path` when available
 3. **Check for existing plans/specs** — look in `notes/specs/`, `notes/`, and beads (`bd list` if available)
 4. **Ask clarifying questions** if the problem space is ambiguous. Don't proceed with assumptions on business logic.

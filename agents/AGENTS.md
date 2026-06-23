@@ -6,7 +6,7 @@ When unsure, **ask the developer** before making changes.
 
 | # | DO | DON'T |
 |---|-----|-------|
-| G-1 | Add/update `AIDEV-NOTE:` anchors near non-trivial edits | Delete/mangle existing `AIDEV-` comments |
+| G-1 | Add/update `DEV-NOTE:` anchors near non-trivial edits | Delete/mangle existing `DEV-` comments |
 | G-2 | Follow lint/style configs (`.golangci.yml`, `pyproject.toml`, `.prettierrc`) | Re-format to other styles |
 | G-3 | Ask confirmation for >300 LOC or >3 files | Refactor large modules without guidance |
 | G-4 | Stay in current task context | Continue prior task after "new task" |
@@ -31,7 +31,9 @@ When unsure, **ask the developer** before making changes.
 
 ## Anchor Comments
 
-Use `AIDEV-NOTE:`, `AIDEV-TODO:`, `AIDEV-QUESTION:` prefixes. Search existing anchors before scanning. Update when modifying associated code. Never remove without human instruction.
+Use `DEV-NOTE:`, `DEV-TODO:`, `DEV-QUESTION:` markers near non-trivial code. These annotations are for all developers — human and agent alike. Search existing anchors before scanning. Update when modifying associated code. Never remove without human instruction.
+
+If you encounter the old `AIDEV-NOTE:`, `AIDEV-TODO:`, or `AIDEV-QUESTION:` prefix in any file, migrate it to the `DEV-` equivalent in the same edit.
 
 ## Commits
 
@@ -60,7 +62,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Alter migration files
 - Commit secrets
 - Assume business logic
-- Remove AIDEV- comments
+- Remove DEV- comments
 
 Optimize for maintainability. When in doubt, choose boring.
 

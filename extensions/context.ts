@@ -74,7 +74,7 @@ interface ContextBreakdown {
   turnCount: number;
 }
 
-// AIDEV-NOTE: ctx typed as ExtensionCommandContext; getSystemPrompt() may not exist on the
+// DEV-NOTE: ctx typed as ExtensionCommandContext; getSystemPrompt() may not exist on the
 // public type in all versions, so it is guarded with try/catch below.
 function computeBreakdown(ctx: ExtensionCommandContext): ContextBreakdown | null {
   const usage: ContextUsage | undefined = ctx.getContextUsage();

@@ -1,7 +1,7 @@
 /**
  * Git Gate Extension
  *
- * AIDEV-NOTE: Hard gate on git commit/push/tag commands.
+ * DEV-NOTE: Hard gate on git commit/push/tag commands.
  * Intercepts bash tool calls and requires explicit user confirmation
  * before executing any git mutation (commit, push, tag operations).
  * This is a safety net on top of AGENTS.md soft instructions.
@@ -10,7 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-	// AIDEV-NOTE: Patterns cover common git mutation commands.
+	// DEV-NOTE: Patterns cover common git mutation commands.
 	// Read-only git commands (status, log, diff, branch --list, etc.) are NOT blocked.
 	const gitMutationPatterns = [
 		/\bgit\s+commit\b/i,

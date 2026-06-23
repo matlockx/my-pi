@@ -4,7 +4,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { fileURLToPath } from "url";
 
-// AIDEV-NOTE: Symlinks agents/AGENTS.md → ~/.pi/agent/AGENTS.md on startup.
+// DEV-NOTE: Symlinks agents/AGENTS.md → ~/.pi/agent/AGENTS.md on startup.
 // Warns and skips if target already exists (symlink or file).
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {

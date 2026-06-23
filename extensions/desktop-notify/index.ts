@@ -58,7 +58,7 @@ export default function (pi: ExtensionAPI) {
 		lastAgentEndTs = now;
 
 		if (!state.enabled) return;
-		// AIDEV-NOTE: Only notify when the user was idle long enough before this run.
+		// DEV-NOTE: Only notify when the user was idle long enough before this run.
 		// previousEnd===0 means first run in this session → always notify (idleBeforeRun is huge).
 		// Using previousEnd (captured before overwrite) so the guard is never trivially true.
 		if (previousEnd !== 0 && idleBeforeRun < state.idleThresholdMs) return;

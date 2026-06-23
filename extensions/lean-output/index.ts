@@ -64,7 +64,7 @@ function saveDefault(mode: Mode): void {
 	}
 }
 
-// AIDEV-NOTE: lean-output rules — the high-leverage payload. Tuned to cut
+// DEV-NOTE: lean-output rules — the high-leverage payload. Tuned to cut
 // OUTPUT prose, never reasoning/correctness. Edit here to retune behavior.
 const SHARED_GUARDRAILS = `
 Never sacrifice correctness for brevity. The following ALWAYS keep full detail:

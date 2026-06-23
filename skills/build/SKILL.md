@@ -50,7 +50,7 @@ When given a spec path or plan reference:
 1. **Read the spec completely** — no limit/offset, full context.
 2. **Check YAML frontmatter** for `work_state` — warn if still `draft` (suggest `/plan` to finalize).
 3. **Read all mentioned files fully** — understand the current state.
-4. **Search for `AIDEV-*` anchors** in affected directories.
+4. **Search for `DEV-*` anchors** in affected directories.
 5. **Create a todo list** with markdown checkboxes to track progress.
 6. **Implement phase by phase**:
    - Load the correct coding skill(s) for each file
@@ -71,7 +71,7 @@ When given a direct request (bug fix, feature, refactor):
 
 1. **Understand the ask** — parse what needs to happen.
 2. **Research the relevant code** — read files, search for patterns, check tests.
-3. **Search for `AIDEV-*` anchors** in affected directories.
+3. **Search for `DEV-*` anchors** in affected directories.
 4. **Plan briefly** — for non-trivial changes, outline what you'll do before doing it:
    ```
    I'll make these changes:
@@ -107,9 +107,9 @@ When the issue is a bug or unexpected behavior:
 
 ## Code Quality
 
-- **Add `AIDEV-NOTE:` comments** near non-trivial edited code explaining the why.
-- **Update existing `AIDEV-*` comments** when modifying associated code.
-- **Never delete `AIDEV-*` comments** without explicit user instruction.
+- **Add `DEV-NOTE:` comments** near non-trivial edited code explaining the why.
+- **Update existing `DEV-*` comments** when modifying associated code.
+- **Never delete `DEV-*` comments** without explicit user instruction.
 - **Follow lint/style configs** — use the project's configured linter, not manual formatting.
 - **Use `ctx7` first** when looking up library/framework behavior before reading vendored source.
 
@@ -157,7 +157,7 @@ How should I proceed?
 - Change API contracts without discussing first
 - Alter migration files without explicit approval
 - Assume business logic — ask when unclear
-- Remove `AIDEV-*` comments
+- Remove `DEV-*` comments
 
 ## Integration Notes
 

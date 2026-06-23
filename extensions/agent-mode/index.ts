@@ -4,7 +4,7 @@
  * Tracks "plan" vs "build" agent modes and auto-switches models
  * when toggling between them via /plan and /build prompt templates.
  *
- * AIDEV-NOTE: Model memory is per-mode. When you switch from build→plan,
+ * DEV-NOTE: Model memory is per-mode. When you switch from build→plan,
  * the plan mode's last model is restored. When you switch back to build,
  * the build mode's model is restored. First activation uses defaults
  * from config files or hardcoded fallbacks.
@@ -36,7 +36,7 @@ interface ModeConfig {
 
 // ── Config loading ────────────────────────────────────────────────────
 
-// AIDEV-NOTE: Per-repo config files (.pi/plan-config.json, .pi/build-config.json)
+// DEV-NOTE: Per-repo config files (.pi/plan-config.json, .pi/build-config.json)
 // override hardcoded defaults. Format: { "model": "anthropic/claude-opus-4-0", "thinking": "high" }
 function loadModeConfig(cwd: string, mode: AgentMode): ModeConfig | null {
 	try {
@@ -48,7 +48,7 @@ function loadModeConfig(cwd: string, mode: AgentMode): ModeConfig | null {
 	}
 }
 
-// AIDEV-NOTE: Hardcoded defaults — used when no per-repo config exists.
+// DEV-NOTE: Hardcoded defaults — used when no per-repo config exists.
 // These search available models by substring match, so they work across
 // provider naming variations.
 const DEFAULT_MODEL_HINTS: Record<AgentMode, { hints: string[]; thinking: string }> = {
@@ -134,7 +134,7 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 
 	// ── Remember model changes while in a mode ────────────────────────
 
-	// AIDEV-NOTE: When user manually switches model (via /model, Ctrl+P, leader-key),
+	// DEV-NOTE: When user manually switches model (via /model, Ctrl+P, leader-key),
 	// we update the memory for the current mode so it's restored on next switch.
 	pi.on("model_select", async (event, ctx) => {
 		if (!state.currentMode) return;
@@ -160,7 +160,7 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 
 	// ── Mode switching on /plan and /build ─────────────────────────────
 
-	// AIDEV-NOTE: We intercept input events that start with /plan or /build.
+	// DEV-NOTE: We intercept input events that start with /plan or /build.
 	// We DON'T block the input — we let it pass through to prompt template
 	// expansion. We just handle the model switch as a side effect.
 	pi.on("input", async (event, ctx) => {
@@ -246,7 +246,7 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 
 	// ── TUI indicators ────────────────────────────────────────────────
 
-	// AIDEV-NOTE: Orange (ANSI 208) for plan, Blue (ANSI 33) for build — matches OpenCode.
+	// DEV-NOTE: Orange (ANSI 208) for plan, Blue (ANSI 33) for build — matches OpenCode.
 	const MODE_COLORS: Record<AgentMode, number> = { plan: 208, build: 33 };
 	const MODE_ICONS: Record<AgentMode, string> = { plan: "🧠", build: "⚡" };
 	const ansi = (code: number, text: string) => `\x1b[38;5;${code}m${text}\x1b[0m`;

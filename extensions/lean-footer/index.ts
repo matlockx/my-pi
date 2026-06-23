@@ -21,7 +21,7 @@
  *
  * Default persisted to ~/.pi/agent/lean-footer.json
  *
- * AIDEV-NOTE: pi's real footer lives in core dist/modes/interactive/
+ * DEV-NOTE: pi's real footer lives in core dist/modes/interactive/
  * components/footer.js and dims everything uniformly. A theme can't split
  * in/out families because the footer hardcodes the dim wrap — so we override
  * the whole footer here instead. Field semantics mirror that file exactly:
@@ -84,7 +84,7 @@ const fmt = (n: number): string =>
 export default function leanFooter(pi: ExtensionAPI) {
 	let enabled = loadDefault();
 
-	// AIDEV-NOTE: rebuilds the footer with per-field color families. Layout/
+	// DEV-NOTE: rebuilds the footer with per-field color families. Layout/
 	// padding computed on PLAIN strings, colors applied after, so ANSI never
 	// corrupts width math or gets cut mid-escape.
 	function install(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) {
