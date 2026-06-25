@@ -51,6 +51,8 @@ Use `ctx7` first for library/API lookups: `npx ctx7@latest library <name>` then 
 
 Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 
+**NEVER** add beads issue IDs (e.g. `bd-123`) into code as comments. Beads IDs belong in the issue tracker, not the source.
+
 ## Workflow
 
 1. Check `AGENTS.md` files → 2. Clarify ambiguities → 3. Plan → 4. Trivial: go. Non-trivial: present plan → 5. Track progress → 6. Update docs/anchors → 7. User review
