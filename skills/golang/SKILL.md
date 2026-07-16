@@ -33,6 +33,13 @@ All modern features are baseline — use them freely:
 ### Module structure
 Every project MUST have `go.mod` at root. Always `go mod tidy` before committing. Commit `go.sum`.
 
+### Local lib development (MUST FOLLOW)
+When changing a lib and using it directly in the current project, use a `go.work` file. NEVER add a `replace` entry to `go.mod`. `replace` pollutes the committed module and breaks other consumers; `go.work` stays local and is gitignored.
+```
+go work init
+go work use . ../mylib
+```
+
 ### Standard layout
 ```
 project/
