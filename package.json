@@ -25,6 +25,7 @@
     "./extensions/agent-mode/index.ts",
     "./extensions/lean-footer/index.ts",
     "./extensions/lean-output/index.ts",
+      "./extensions/secret-redactor/index.ts",
       "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
       "./node_modules/@sting8k/pi-vcc/index.ts",
       "./node_modules/@tomooshi/caveman-milk-pi/index.ts",
