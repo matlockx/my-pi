@@ -65,6 +65,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Commit secrets
 - Assume business logic
 - Remove DEV- comments
+- Use emojis in documentation, commit messages, or any written output
 
 Optimize for maintainability. When in doubt, choose boring.
 
