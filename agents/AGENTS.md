@@ -43,6 +43,21 @@ Provide commit message example, **wait for input**. Never push. Never start new 
 
 Tests are contracts. Never modify assertions solely to match new code. Never delete tests without approval. Investigate first.
 
+When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDRs before
+changing assertions. A failing test may protect a business rule — fix the code, not the test,
+unless a BDR has been explicitly superseded. When in doubt, ask the user before modifying test assertions.
+
+## Decision Records (BDR / ADR)
+
+If a project has `docs/bdr/` (Business Decision Records) or `docs/adr/` (Architecture Decision Records):
+
+- **Consult** BDRs before implementing features that touch business rules.
+- **After new features**: if the implementation introduces a business rule, ask the user whether
+  a BDR should be created. Do not create one silently.
+- **Reference in code**: leave `DEV-NOTE: see BDR-NNN` (or `ADR-NNN`) at implementation sites
+  where the connection to a decision record is non-obvious.
+- **Never modify** existing BDRs/ADRs — supersede them with a new numbered record.
+
 ## Context7
 
 Use `ctx7` first for library/API lookups: `npx ctx7@latest library <name>` then `npx ctx7@latest docs <id> "<question>"`. Fall back to source only if no results.
