@@ -42,7 +42,9 @@ Every BDR follows this template:
 ```
 
 No "Impact on Implementation" section — BDRs document the *what* and *why*, not *where*.
-Code references belong in `DEV-NOTE: see BDR-NNN` comments at the implementation site.
+Code references belong in `DEV-NOTE: see <repo>/BDR-NNN` comments at the implementation site.
+Always prefix the ID with the owning repo name (e.g. `order-service/BDR-001`), even for records in
+the current repo, so cross-repo references are unambiguous.
 
 ## Rules
 

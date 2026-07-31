@@ -54,7 +54,10 @@ What is the change being proposed or accepted? State it clearly and directly.
 3. **Immutable once accepted.** Don't edit old ADRs to reflect new reality — write a new one that supersedes.
 4. **Context is king.** Future readers need to understand WHY, not just WHAT. Include the alternatives considered and why they lost.
 5. **Keep it short.** 1-2 paragraphs per section. No essays.
-6. **Link to code.** Reference file paths, function names, or config keys when relevant.
+6. **Link to code.** Reference file paths, function names, or config keys when relevant. Code-side
+   references use `DEV-NOTE: see <repo>/ADR-NNN` and always carry the owning repo name
+   (e.g. `order-service/ADR-001`), even for records in the current repo, so cross-repo references
+   are unambiguous.
 7. **Status transitions:** Proposed → Accepted (team agrees) → Deprecated/Superseded (decision revisited).
 
 ## Naming Convention

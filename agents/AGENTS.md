@@ -54,8 +54,10 @@ If a project has `docs/bdr/` (Business Decision Records) or `docs/adr/` (Archite
 - **Consult** BDRs before implementing features that touch business rules.
 - **After new features**: if the implementation introduces a business rule, ask the user whether
   a BDR should be created. Do not create one silently.
-- **Reference in code**: leave `DEV-NOTE: see BDR-NNN` (or `ADR-NNN`) at implementation sites
-  where the connection to a decision record is non-obvious.
+- **Reference in code**: leave `DEV-NOTE: see <repo>/BDR-NNN` (or `<repo>/ADR-NNN`) at implementation
+  sites where the connection to a decision record is non-obvious. Always prefix the record ID with
+  the owning repo name (e.g. `order-service/BDR-001`), also for records in the current repo — so a
+  reference stays unambiguous when the record lives in another repo.
 - **Never modify** existing BDRs/ADRs — supersede them with a new numbered record.
 
 ## Context7
