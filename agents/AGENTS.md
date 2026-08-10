@@ -43,9 +43,60 @@ Provide commit message example, **wait for input**. Never push. Never start new 
 
 Tests are contracts. Never modify assertions solely to match new code. Never delete tests without approval. Investigate first.
 
+### New code is tested by default
+
+**Every new or changed function with behaviour gets a test in the same task.** Not the next
+task, not "follow-up", not "the caller's test covers it". A task that adds a function and no
+test is incomplete, and "no rule said I had to" is not a defence — this is the rule.
+
+Behaviour means: a branch, a loop, a calculation, a state transition, error handling,
+parsing, mapping, or anything touching money, auth, or persistence.
+
+Exempt — no test needed, but **say which exemption applies**, in one line, when reporting
+the work:
+
+- Pure delegation: a wrapper that only forwards arguments and adds nothing.
+- Generated code.
+- Trivial accessors, constants, and struct literals with no logic.
+- Wiring/composition (DI setup, route registration) already covered end to end.
+- The test needs infrastructure this repo cannot run — then say so explicitly and file a
+  task for it, do not stay silent.
+
+Silence is the failure mode. Either the test exists, or the exemption is named out loud.
+Unsure whether it is worth testing → write the test; it is cheaper than the argument.
+
+Rule-coverage checks (`TestBDR###R#`) are an **additional** obligation for decision-record
+rules, not a replacement for this one. A repo with no BDRs still owes tests for new code.
+
 When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDRs before
 changing assertions. A failing test may protect a business rule — fix the code, not the test,
 unless a BDR has been explicitly superseded. When in doubt, ask the user before modifying test assertions.
+
+### Rule traceability (repos with `docs/bdr/` or `docs/adr/`)
+
+Decision records are the test specification. Each record numbers its rules (`BDR-019-R1`,
+`ADR-006-R2`), and every rule is covered by at least one test whose name carries the rule ID:
+
+```go
+func TestBDR019R1_PermanentVerdictRefundsItemAutomatically(t *testing.T) { ... }
+```
+
+One rule may have several tests; one test covers one rule. A rule with no matching test is a
+build failure where a coverage check is wired into the repo's check script. When a rule cannot
+be tested in this repo (peer service owns it), say so in the record instead of faking coverage.
+
+### Observability contract
+
+Every business rule declares, in its record, how a violation becomes visible: the log line, the
+audit/history entry, and the metric. Tests assert those, not only the happy outcome — an
+unplanned edge case must show up in monitoring rather than silently corrupting state.
+
+### Adversarial matrix
+
+For money paths and any at-least-once message consumer, the rule's tests include: duplicate
+delivery of the same message, out-of-order arrival, duplicate client request id, amount/currency
+mismatch, missing correlation ids, provider decline, and concurrent inline path plus background
+sweep. Most production bugs live here, not in the happy path.
 
 ## Decision Records (BDR / ADR)
 
@@ -58,7 +109,9 @@ If a project has `docs/bdr/` (Business Decision Records) or `docs/adr/` (Archite
   sites where the connection to a decision record is non-obvious. Always prefix the record ID with
   the owning repo name (e.g. `order-service/BDR-001`), also for records in the current repo — so a
   reference stays unambiguous when the record lives in another repo.
-- **Never modify** existing BDRs/ADRs — supersede them with a new numbered record.
+- **Never modify** existing BDRs/ADRs — supersede them with a new numbered record. Narrow
+  additive exception: rule numbering and an `## Observability` section may be added to an
+  existing record, since neither changes what the record decided. Rule text itself is immutable.
 
 ## Context7
 

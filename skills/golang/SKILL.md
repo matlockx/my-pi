@@ -132,6 +132,38 @@ func TestHandler(t *testing.T) {
 - Use `require` for fatal preconditions, `assert` for non-fatal checks.
 - Use `require.NoError(t, err)` not `if err != nil { t.Fatal(err) }`.
 
+#### Decision-record test naming
+
+In repos with `docs/bdr/` or `docs/adr/`, a test that covers a numbered rule carries the rule ID
+as its name prefix, so `go test` output and the coverage check both read it:
+
+```go
+// covers order-service/BDR-020-R1
+func TestBDR020R1_RedeliveredRefundEventIsIgnored(t *testing.T) { ... }
+func TestADR006R2_OutboxRowCommitsWithTheOrder(t *testing.T) { ... }
+```
+
+ID form in the name: `BDR`/`ADR` + 3-digit record + `R` + rule number, no separators. Subtests
+inherit coverage from the parent, so a table-driven test may cover one rule with many cases.
+
+Coverage check (wire into the repo check script; blocking):
+
+```bash
+rg -o '^\*\*R[0-9]+' -r '' docs/bdr/*.md   # rules declared
+rg -o 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go  # rules covered
+```
+
+#### Test layers
+
+| Layer | Location | Answers |
+|-------|----------|---------|
+| contract | `internal/client/*/client_test.go` | every documented status+code of a peer maps to the right classification (retryable vs permanent verdict vs contract fault) |
+| flow | DB-backed harness (`testx.NewConnection`) | one business rule end to end: HTTP or consumer in, DB + events + history + metrics out |
+| unit | package-local | pure logic, `synctest` for anything clock-driven |
+
+A peer returning a generic wrapper (echo/startup turns a route miss into `404` with code
+`Internal`) means status alone never classifies an error — assert on status **and** code.
+
 ### Application framework — `github.com/flachnetz/startup/v2`
 Opinionated application bootstrap: flags, logging, metrics, tracing, Postgres, Kafka events, HTTP server, JWT auth.
 
