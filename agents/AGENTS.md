@@ -10,6 +10,7 @@ When unsure, **ask the developer** before making changes.
 | G-2 | Follow lint/style configs (`.golangci.yml`, `pyproject.toml`, `.prettierrc`) | Re-format to other styles |
 | G-3 | Ask confirmation for >300 LOC or >3 files | Refactor large modules without guidance |
 | G-4 | Stay in current task context | Continue prior task after "new task" |
+| G-5 | Name custom HTTP headers without a prefix (`Request-Id`, `Correlation-Id`) | Use the deprecated `X-` prefix (RFC 6648) |
 
 ## Environment
 
@@ -133,6 +134,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Change API contracts
 - Alter migration files
 - Commit secrets
+- Introduce HTTP headers prefixed with `X-` (deprecated by RFC 6648; only keep existing ones for compatibility)
 - Assume business logic
 - Remove DEV- comments
 - Use emojis in documentation, commit messages, or any written output
