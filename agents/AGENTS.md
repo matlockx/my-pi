@@ -134,6 +134,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Change API contracts
 - Alter migration files
 - Commit secrets
+- Add a `replace` directive to `go.mod` (use a local, gitignored `go.work` instead)
 - Introduce HTTP headers prefixed with `X-` (deprecated by RFC 6648; only keep existing ones for compatibility)
 - Assume business logic
 - Remove DEV- comments
