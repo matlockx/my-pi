@@ -11,6 +11,7 @@ When unsure, **ask the developer** before making changes.
 | G-3 | Ask confirmation for >300 LOC or >3 files | Refactor large modules without guidance |
 | G-4 | Stay in current task context | Continue prior task after "new task" |
 | G-5 | Name custom HTTP headers without a prefix (`Request-Id`, `Correlation-Id`) | Use the deprecated `X-` prefix (RFC 6648) |
+| G-6 | Set `User-Agent` to the calling service's own name on every outbound call to an internal service | Leave the Go default (`Go-http-client/1.1`) or an empty UA |
 
 ## Environment
 
@@ -135,6 +136,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Alter migration files
 - Commit secrets
 - Add a `replace` directive to `go.mod` (use a local, gitignored `go.work` instead)
+- Call an internal service without an identifying `User-Agent` (set it once on the shared `http.Client`/transport, not per request)
 - Introduce HTTP headers prefixed with `X-` (deprecated by RFC 6648; only keep existing ones for compatibility)
 - Assume business logic
 - Remove DEV- comments
