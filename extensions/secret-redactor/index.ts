@@ -20,6 +20,7 @@ import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { checkToolCall } from "./fileguard.ts";
 import { scanSecrets } from "./gitleaks.ts";
 import {
 	collectStrings,
@@ -104,6 +105,16 @@ export default function (pi: ExtensionAPI) {
 			return r.value;
 		}
 		return undefined;
+	});
+
+	// --- Wall: block reads of secret-bearing files outright (.env, *.tfvars, keys) ---
+	// Runs even when redaction is toggled off: a wall is not a net.
+	pi.on("tool_call", (event) => {
+		const reason = checkToolCall(
+			event.toolName,
+			event.input as Record<string, unknown>,
+		);
+		return reason ? { block: true, reason } : undefined;
 	});
 
 	// --- Ingestion: tool output (bash/read/grep/...) — the `cat .env` vector ---
