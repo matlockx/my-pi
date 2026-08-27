@@ -15,6 +15,7 @@ When unsure, **ask the developer** before making changes.
 | G-7 | Use British English everywhere (`cancelled`, `behaviour`, `initialise`, `colour`) | Mix in US spellings (`canceled`, `behavior`, `initialize`, `color`) |
 | G-8 | Multi-repo change: list changes per repo, ask for external code review, ask for a commit | Report only a summary or commit without asking |
 | G-9 | Golden Helm chart template: pass config to internal services via **env variables** | Use command line args/`args:`/`command:` (if truly unavoidable, say so and wait for user confirmation) |
+| G-10 | Multi-repo change: `git fetch origin` (or pull) each repo's `main` **before** research/lookups | Reason about code from a stale local checkout |
 
 ## Environment
 
@@ -45,6 +46,10 @@ If you encounter the old `AIDEV-NOTE:`, `AIDEV-TODO:`, or `AIDEV-QUESTION:` pref
 Provide commit message example, **wait for input**. Never push. Never start new task unprompted.
 
 ### Multi-repo changes
+
+Before researching or reasoning about code in a multi-repo task, **MUST** fetch/pull the latest
+`origin/main` in every repository involved. Never base assumptions on a stale local checkout. If a
+fetch fails (no network, auth), say so explicitly and state that findings may be outdated.
 
 When a task touches more than one repository, end the work by reporting, per repository:
 
