@@ -13,6 +13,7 @@ When unsure, **ask the developer** before making changes.
 | G-5 | Name custom HTTP headers without a prefix (`Request-Id`, `Correlation-Id`) | Use the deprecated `X-` prefix (RFC 6648) |
 | G-6 | Set `User-Agent` to the calling service's own name on every outbound call to an internal service | Leave the Go default (`Go-http-client/1.1`) or an empty UA |
 | G-7 | Use British English everywhere (`cancelled`, `behaviour`, `initialise`, `colour`) | Mix in US spellings (`canceled`, `behavior`, `initialize`, `color`) |
+| G-8 | Multi-repo change: list changes per repo, ask for external code review, ask for a commit | Report only a summary or commit without asking |
 
 ## Environment
 
@@ -41,6 +42,18 @@ If you encounter the old `AIDEV-NOTE:`, `AIDEV-TODO:`, or `AIDEV-QUESTION:` pref
 ## Commits
 
 Provide commit message example, **wait for input**. Never push. Never start new task unprompted.
+
+### Multi-repo changes
+
+When a task touches more than one repository, end the work by reporting, per repository:
+
+- the repository path,
+- the files changed there,
+- one line per change describing what and why.
+
+Then ask the user to review the diff in the tool of their choice (IDE, `git diff`, PR, review UI),
+and ask explicitly for approval to commit — one commit message example per repository, since each
+repository commits separately. Never commit or push before that approval.
 
 ## Tests
 
