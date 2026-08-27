@@ -14,6 +14,7 @@ When unsure, **ask the developer** before making changes.
 | G-6 | Set `User-Agent` to the calling service's own name on every outbound call to an internal service | Leave the Go default (`Go-http-client/1.1`) or an empty UA |
 | G-7 | Use British English everywhere (`cancelled`, `behaviour`, `initialise`, `colour`) | Mix in US spellings (`canceled`, `behavior`, `initialize`, `color`) |
 | G-8 | Multi-repo change: list changes per repo, ask for external code review, ask for a commit | Report only a summary or commit without asking |
+| G-9 | Golden Helm chart template: pass config to internal services via **env variables** | Use command line args/`args:`/`command:` (if truly unavoidable, say so and wait for user confirmation) |
 
 ## Environment
 
@@ -153,6 +154,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Call an internal service without an identifying `User-Agent` (set it once on the shared `http.Client`/transport, not per request)
 - Introduce HTTP headers prefixed with `X-` (deprecated by RFC 6648; only keep existing ones for compatibility)
 - Mix US and British spelling (British English only: code identifiers, comments, docs, commit messages, logs, UI copy; exception: third-party API fields and language keywords keep their original spelling, e.g. CSS `color`, `initializeApp`)
+- Pass config to a service via Helm `args:`/`command:` when an env variable would do (golden chart template: env only; no other way → inform user, wait for confirmation)
 - Assume business logic
 - Remove DEV- comments
 - Use emojis in documentation, commit messages, or any written output
