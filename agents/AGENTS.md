@@ -16,6 +16,7 @@ When unsure, **ask the developer** before making changes.
 | G-8 | Multi-repo change: list changes per repo, ask for external code review, ask for a commit | Report only a summary or commit without asking |
 | G-9 | Golden Helm chart template: pass config to internal services via **env variables** | Use command line args/`args:`/`command:` (if truly unavoidable, say so and wait for user confirmation) |
 | G-10 | Multi-repo change: `git fetch origin` (or pull) each repo's `main` **before** research/lookups | Reason about code from a stale local checkout |
+| G-11 | Doc comments: state the fact plainly and name the source (`as reported by the provider`) | Anthropomorphise or use chatty phrasing (`when it says`, `we`, `you'll want to`) |
 
 ## Environment
 
@@ -40,6 +41,26 @@ When unsure, **ask the developer** before making changes.
 Use `DEV-NOTE:`, `DEV-TODO:`, `DEV-QUESTION:` markers near non-trivial code. These annotations are for all developers — human and agent alike. Search existing anchors before scanning. Update when modifying associated code. Never remove without human instruction.
 
 If you encounter the old `AIDEV-NOTE:`, `AIDEV-TODO:`, or `AIDEV-QUESTION:` prefix in any file, migrate it to the `DEV-` equivalent in the same edit.
+
+## Comments and Docstrings
+
+Doc comments (Javadoc, Go doc, docstrings, Avro/IDL `/** */`) are API documentation, not chat.
+Write them as short declarative statements a reader can trust without context.
+
+| DO | DON'T |
+|----|-------|
+| Name the source of a value precisely: `as reported by the provider`, `taken from the provider response`, `set by the settlement job` | Anthropomorphise a system: `when it says`, `if the provider tells us`, `what the bank thinks` |
+| Third person, present tense, no subject pronouns: `Returns the settled amount.` | First/second person: `we return`, `you'll get`, `let's` |
+| State the condition explicitly: `Only meaningful when settlementDifferenceMinor is non-zero.` | Vague hedging: `usually`, `might be there`, `sort of` |
+| Give units, currency scale, nullability, and enum-ish example values | Restate the field name in prose: `The refund id. The id of the refund.` |
+| One sentence per fact, ending with a full stop | Run-on sentences chaining three clauses with commas |
+
+Optional/nullable fields document three things: what the value means, who sets it, and when it is
+absent. British English applies here too (G-7).
+
+A doc comment for a field whose value comes from an external system always names that system and
+whether the value is passed through verbatim or mapped locally — that is the question a reviewer
+asks first.
 
 ## Commits
 
@@ -161,6 +182,7 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Mix US and British spelling (British English only: code identifiers, comments, docs, commit messages, logs, UI copy; exception: third-party API fields and language keywords keep their original spelling, e.g. CSS `color`, `initializeApp`)
 - Pass config to a service via Helm `args:`/`command:` when an env variable would do (golden chart template: env only; no other way → inform user, wait for confirmation)
 - Assume business logic
+- Write doc comments that anthropomorphise a system (`verbatim from the provider when it says`) instead of naming the source (`verbatim from the provider response, when present`)
 - Remove DEV- comments
 - Use emojis in documentation, commit messages, or any written output
 
