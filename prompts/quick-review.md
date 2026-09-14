@@ -3,47 +3,26 @@ description: Fast light review of uncommitted changes (security, design, tests)
 argument-hint: ""
 ---
 
-Do a **light** review of the uncommitted changes — the fast pass, not the deep audit. Budget: a few minutes, no exhaustive file walks, no refactoring proposals.
+Light review of the uncommitted changes — fast pass, not a deep audit. Scope: `git status --porcelain`, `git diff`, `git diff --cached`; changed lines and their immediate context only.
 
-Scope: `git status --porcelain` plus `git diff` and `git diff --cached`. Only the changed lines and their immediate context.
+Check, in this order: **security** (secrets, unvalidated input at a trust boundary, injection, missing authn/authz, PII in logs) · **correctness** (swallowed errors, nil deref, unchecked assertion, missing `defer Close/Rollback`, context not propagated, unsynchronised shared state) · **design and scope** (changes beyond the request, logic already in the repo, one-implementation abstraction, contradicted `docs/bdr/` rule) · **tests** (new behaviour tested, `TestBDR###R#` for record rules, assertions not weakened).
 
-Check exactly these four areas, in this order:
-
-1. **Security** — hardcoded secrets or tokens, unvalidated input crossing a trust boundary, SQL/command string building, missing authn/authz on a new route, secrets or PII in logs.
-2. **Correctness risk** — unhandled or swallowed errors, ignored `err`, nil dereference, unchecked type assertion, missing `defer Close/Rollback`, `context.Context` not propagated, goroutine without cancellation or wait, shared state written without a lock.
-3. **Design and scope** — changes beyond what was requested, duplicated logic that already exists elsewhere in the repo, a new abstraction with one implementation, business rule contradicting a `docs/bdr/` record.
-4. **Test coverage** — every new or changed function with behaviour has a test in this change; decision-record rules have a `TestBDR###R#`-style test; assertions were not weakened to make code pass.
-
-Report format — exactly this, nothing else:
+Reply with exactly this, nothing else:
 
 ```text
 VERDICT: PASS | CONCERNS | FAIL
 
 ## Findings
 
-<severity> <file>:<line> — <finding, one line> → <fix, one line>
+<HIGH|MED|LOW> <file>:<line> — <finding, one line> → <fix, one line>
 
-## Not inspected
+## Commit message
 
-<one line, or "nothing">
-```
-
-Severity is `HIGH`, `MED`, or `LOW`, written bare at the start of the line — no list marker, no bold, no indentation, since the finding lines are parsed for the review panel. Keep `<file>:<line>` a single unspaced token. List at most eight findings, highest severity first. No findings in an area means that area is silent — do not write "looks good" lines. Write `## Findings` followed by `none` when there are none.
-
-`PASS` means nothing blocks a commit. `CONCERNS` means commit is possible but a named issue should be fixed first. `FAIL` means a HIGH finding is present.
-
-After that, close with two more sections:
-
-`## Summary` — two or three lines: what the change does, and the one thing to watch.
-
-`## Commit message` — Conventional Commits style, ready to paste:
-
-```text
 <type>(<scope>): <subject, imperative, max 72 chars>
 
-<body: 2-4 lines on what changed and why, wrapped at 72 chars>
+<body: 2-4 lines, wrapped at 72, omitted for a one-line fix>
 ```
 
-Omit the body only when the change is a one-line fix. Never write a body longer than four lines. British English (G-7).
+Rules: severity bare at line start — no list marker, no bold, no indent; `<file>:<line>` unspaced; at most six findings, highest severity first; silent areas stay silent, `none` under `## Findings` when there is nothing. No summary section, no prose outside the format. `FAIL` means a HIGH finding, `CONCERNS` means fix something before committing, `PASS` means commit is fine. British English (G-7).
 
-Do not fix anything and do not commit — the commit message is a proposal. Report only, then stop and wait for approval.
+Report only. Do not fix, do not commit.

@@ -22,10 +22,12 @@ import { fileURLToPath } from "node:url";
 
 import {
 	lastAssistantText,
+	messageText,
 	parseFindings,
 	parseVerdict,
 	promptBody,
 	shouldAutoReview,
+	trackedStatus,
 } from "./gate.mjs";
 
 const RESET = "\x1b[0m";
@@ -46,6 +48,12 @@ const DIM = "130;150;170";
 const WIDGET_KEY = "quick-review";
 const MAX_WIDGET_FINDINGS = 6;
 
+/**
+ * Stands in for the review prompt in the transcript. The chat shows this one line; the
+ * full checklist is swapped in for the model on the way to the provider.
+ */
+const REVIEW_MARKER = "Quick review of the uncommitted changes.";
+
 const FOLLOW_UP_PROMPT =
 	"Address the quick-review findings above. Fix the HIGH and MED items first, " +
 	"skip anything you judge a false positive and say why in one line, and add or " +
@@ -60,29 +68,46 @@ export default function (pi: ExtensionAPI) {
 	let count = 0;
 	let disabled = false;
 	let running = false;
+	let baseline = "";
+	let reviewBody = "";
 
-	/** Fingerprints the uncommitted changes; returns "" for a clean tree or a non-git directory. */
+	/** Fingerprints the tracked uncommitted changes; "" for a clean tree or a non-git directory. */
 	async function diffFingerprint(cwd: string): Promise<string> {
 		const status = await pi.exec("git", ["status", "--porcelain"], { cwd });
-		if (status.code !== 0 || !status.stdout.trim()) return "";
+		if (status.code !== 0) return "";
+		const tracked = trackedStatus(status.stdout);
+		if (!tracked) return "";
 
 		const diff = await pi.exec("git", ["diff", "HEAD"], { cwd });
 		return createHash("sha1")
-			.update(status.stdout)
+			.update(tracked)
 			.update(diff.stdout ?? "")
 			.digest("hex");
 	}
 
 	async function runReview(ctx: ExtensionContext, hash: string) {
-		const body = promptBody(await readFile(PROMPT_PATH, "utf8"));
+		reviewBody = promptBody(await readFile(PROMPT_PATH, "utf8"));
 		reviewed.add(hash);
 		count += 1;
 		if (ctx.hasUI)
 			ctx.ui.notify("Auto quick-review of uncommitted changes", "info");
 		// DEV-NOTE: agent_end fires while the runner still counts as processing, so an
 		// unqueued sendUserMessage is rejected with "Agent is already processing".
-		pi.sendUserMessage(body, { deliverAs: "followUp" });
+		pi.sendUserMessage(REVIEW_MARKER, { deliverAs: "followUp" });
 	}
+
+	// DEV-NOTE: sendUserMessage renders whatever it sends, so the 20-line checklist would
+	// sit in the transcript above every review. The marker is expanded here instead, which
+	// is the last point before the provider sees the messages.
+	pi.on("context", async (event) => {
+		if (!reviewBody) return;
+		const messages = event.messages.map((message) =>
+			message.role === "user" && messageText(message) === REVIEW_MARKER
+				? { ...message, content: reviewBody }
+				: message,
+		);
+		return { messages };
+	});
 
 	/** Renders the verdict and the top findings as a coloured widget above the editor. */
 	function renderPanel(
@@ -134,7 +159,12 @@ export default function (pi: ExtensionAPI) {
 
 	// DEV-NOTE: the panel describes one specific review, so it is dropped as soon as
 	// the next turn starts rather than lingering over unrelated work.
+	// DEV-NOTE: the baseline is taken here rather than counting write tool calls, so a turn
+	// that changed files through bash (sed, heredoc, git apply) is reviewed like any other.
+	// The auto-review's own follow-up message also starts a turn, which rebaselines before
+	// the fix turn runs — exactly what the next review needs.
 	pi.on("turn_start", async (_event, ctx) => {
+		baseline = await diffFingerprint(ctx.cwd);
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 
@@ -149,7 +179,13 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const hash = await diffFingerprint(ctx.cwd);
-		const { review } = shouldAutoReview({ hash, reviewed, count, disabled });
+		const { review } = shouldAutoReview({
+			hash,
+			reviewed,
+			count,
+			edited: hash !== baseline,
+			disabled,
+		});
 		if (!review) return;
 
 		running = true;

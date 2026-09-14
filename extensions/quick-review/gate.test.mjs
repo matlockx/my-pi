@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import {
 	lastAssistantText,
 	MAX_AUTO_REVIEWS,
+	messageText,
 	parseFindings,
 	parseVerdict,
 	promptBody,
 	shouldAutoReview,
+	trackedStatus,
 } from "./gate.mjs";
 
 test("shouldAutoReview triggers for an unseen dirty tree", () => {
@@ -15,25 +17,30 @@ test("shouldAutoReview triggers for an unseen dirty tree", () => {
 		hash: "abc",
 		reviewed: new Set(),
 		count: 0,
+		edited: true,
 	});
 	assert.deepEqual(result, { review: true, reason: "changed" });
 });
 
 test("shouldAutoReview stays silent on a clean tree", () => {
 	assert.equal(
-		shouldAutoReview({ hash: "", reviewed: new Set(), count: 0 }).review,
+		shouldAutoReview({ hash: "", reviewed: new Set(), count: 0, edited: true })
+			.review,
 		false,
 	);
 });
 
 test("shouldAutoReview reviews each diff fingerprint only once", () => {
 	const reviewed = new Set(["abc"]);
-	assert.deepEqual(shouldAutoReview({ hash: "abc", reviewed, count: 1 }), {
-		review: false,
-		reason: "already-reviewed",
-	});
+	assert.deepEqual(
+		shouldAutoReview({ hash: "abc", reviewed, count: 1, edited: true }),
+		{
+			review: false,
+			reason: "already-reviewed",
+		},
+	);
 	assert.equal(
-		shouldAutoReview({ hash: "def", reviewed, count: 1 }).review,
+		shouldAutoReview({ hash: "def", reviewed, count: 1, edited: true }).review,
 		true,
 	);
 });
@@ -43,6 +50,7 @@ test("shouldAutoReview stops at the session budget", () => {
 		hash: "new",
 		reviewed: new Set(),
 		count: MAX_AUTO_REVIEWS,
+		edited: true,
 	});
 	assert.deepEqual(result, { review: false, reason: "budget-exhausted" });
 });
@@ -53,6 +61,7 @@ test("shouldAutoReview honours the opt-out", () => {
 		reviewed: new Set(),
 		count: 0,
 		disabled: true,
+		edited: true,
 	});
 	assert.deepEqual(result, { review: false, reason: "disabled" });
 });
@@ -136,4 +145,35 @@ test("parseFindings reads severity, location, finding and fix from report lines"
 test("parseFindings returns an empty list for a clean report", () => {
 	assert.deepEqual(parseFindings("VERDICT: PASS\n## Findings\n\nnone"), []);
 	assert.deepEqual(parseFindings(undefined), []);
+});
+
+test("shouldAutoReview skips a turn that changed no file", () => {
+	const decision = shouldAutoReview({
+		hash: "abc",
+		reviewed: new Set(),
+		count: 0,
+		edited: false,
+	});
+	assert.deepEqual(decision, { review: false, reason: "no-edits" });
+});
+
+test("trackedStatus drops untracked entries", () => {
+	assert.equal(trackedStatus("?? Logs.json\n M main.go"), " M main.go");
+	assert.equal(trackedStatus("?? Logs.json\n"), "");
+	assert.equal(trackedStatus(undefined), "");
+});
+
+test("messageText joins text blocks and ignores non-text content", () => {
+	assert.equal(messageText({ content: "plain" }), "plain");
+	assert.equal(
+		messageText({
+			content: [
+				{ type: "thinking", thinking: "hidden" },
+				{ type: "text", text: "a" },
+				{ type: "text", text: "b" },
+			],
+		}),
+		"a\nb",
+	);
+	assert.equal(messageText(undefined), "");
 });

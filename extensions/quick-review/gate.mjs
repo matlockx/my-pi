@@ -12,12 +12,21 @@ export const MAX_AUTO_REVIEWS = 3;
  * @param {string} input.hash Fingerprint of the current uncommitted diff. Empty string means a clean tree.
  * @param {Set<string>} input.reviewed Fingerprints already reviewed in this session.
  * @param {number} input.count Auto-reviews already triggered in this session.
+ * @param {boolean} [input.edited] True when the tracked tree changed during the finished
+ *   turn. Defaults to false, so a caller that omits it never triggers a review.
  * @param {boolean} [input.disabled] True when the user opted out for this session.
  * @returns {{review: boolean, reason: string}} `reason` names the rule that decided, for logging.
  */
-export function shouldAutoReview({ hash, reviewed, count, disabled = false }) {
+export function shouldAutoReview({
+ hash,
+ reviewed,
+ count,
+ edited = false,
+ disabled = false,
+}) {
  if (disabled) return { review: false, reason: "disabled" };
  if (!hash) return { review: false, reason: "clean-tree" };
+ if (!edited) return { review: false, reason: "no-edits" };
  if (reviewed.has(hash)) return { review: false, reason: "already-reviewed" };
  if (count >= MAX_AUTO_REVIEWS)
   return { review: false, reason: "budget-exhausted" };
@@ -32,17 +41,25 @@ export function shouldAutoReview({ hash, reviewed, count, disabled = false }) {
  */
 export function lastAssistantText(messages) {
  for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
-  const message = messages[i];
-  if (message?.role !== "assistant") continue;
-  const content = message.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-   .filter((block) => block?.type === "text" && typeof block.text === "string")
-   .map((block) => block.text)
-   .join("\n");
+  if (messages[i]?.role === "assistant") return messageText(messages[i]);
  }
  return "";
+}
+
+/**
+ * Concatenates the text blocks of one message.
+ *
+ * @param {{content?: unknown}} message A message with string or block content.
+ * @returns {string} The text, or "" when the message carries none.
+ */
+export function messageText(message) {
+ const content = message?.content;
+ if (typeof content === "string") return content;
+ if (!Array.isArray(content)) return "";
+ return content
+  .filter((block) => block?.type === "text" && typeof block.text === "string")
+  .map((block) => block.text)
+  .join("\n");
 }
 
 /**
@@ -59,6 +76,22 @@ export function parseVerdict(text) {
  return match
   ? /** @type {"PASS"|"CONCERNS"|"FAIL"} */ (match[1].toUpperCase())
   : null;
+}
+
+/**
+ * Fingerprints the tracked changes in a `git status --porcelain` listing.
+ *
+ * Untracked entries are ignored, so a stray download in the working tree does not
+ * look like work to review.
+ *
+ * @param {string} status Output of `git status --porcelain`.
+ * @returns {string} The tracked status lines, or "" when none remain.
+ */
+export function trackedStatus(status) {
+ return (status ?? "")
+  .split("\n")
+  .filter((line) => line.trim() && !line.startsWith("??"))
+  .join("\n");
 }
 
 /**
