@@ -19,6 +19,7 @@
       "./extensions/index.ts",
       "./extensions/context.ts",
       "./extensions/review/review.ts",
+      "./extensions/quick-review/index.ts",
       "./extensions/tool-pills/index.ts",
       "./extensions/desktop-notify/index.ts",
       "./extensions/memory/index.ts",

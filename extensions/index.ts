@@ -11,7 +11,7 @@ export default function (pi: ExtensionAPI) {
     if (event.reason !== "startup") return;
 
     const source = fileURLToPath(
-      new URL("../agents/AGENTS.md", import.meta.url)
+      new URL("../agents/AGENTS.md", import.meta.url),
     );
     const target = join(homedir(), ".pi", "agent", "AGENTS.md");
 
@@ -20,7 +20,7 @@ export default function (pi: ExtensionAPI) {
       // Target exists (file or symlink) — warn and skip
       ctx.ui.notify(
         `AGENTS.md already exists at ${target} — skipping install. Remove it manually to let this package manage it.`,
-        "warn"
+        "warning",
       );
       return;
     } catch {

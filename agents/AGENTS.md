@@ -17,6 +17,8 @@ When unsure, **ask the developer** before making changes.
 | G-9 | Golden Helm chart template: pass config to internal services via **env variables** | Use command line args/`args:`/`command:` (if truly unavoidable, say so and wait for user confirmation) |
 | G-10 | Multi-repo change: `git fetch origin` (or pull) each repo's `main` **before** research/lookups | Reason about code from a stale local checkout |
 | G-11 | Doc comments: state the fact plainly and name the source (`as reported by the provider`) | Anthropomorphise or use chatty phrasing (`when it says`, `we`, `you'll want to`) |
+| G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
+| G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 
 ## Environment
 
@@ -61,6 +63,82 @@ absent. British English applies here too (G-7).
 A doc comment for a field whose value comes from an external system always names that system and
 whether the value is passed through verbatim or mapped locally — that is the question a reviewer
 asks first.
+
+### A comment block belongs to the declaration directly below it
+
+A doc comment and its declaration are one unit. Never insert anything between them.
+
+When adding a declaration (type, function, const, field) near an existing one, the insertion point
+is **above the existing declaration's comment block**, never between the comment and its
+declaration. The same applies when moving, reordering, or extracting code: comment block and
+declaration move together.
+
+Before writing an edit anchored on a declaration line, look at the lines above it. If they are a
+comment block, the anchor moves up to the first line of that block.
+
+```go
+// Tenant is the existing type.
+type Tenant struct{ ... }
+```
+
+Wrong — new type inserted below the comment, orphaning it and stealing `Tenant`'s documentation:
+
+```go
+// Tenant is the existing type.
+
+// Account is the new type.
+type Account struct{ ... }
+
+type Tenant struct{ ... }
+```
+
+Right — new block placed wholly above or wholly below the existing unit:
+
+```go
+// Account is the new type.
+type Account struct{ ... }
+
+// Tenant is the existing type.
+type Tenant struct{ ... }
+```
+
+After any edit that adds or moves a declaration, verify each touched declaration still carries its
+own comment and no comment block sits immediately above another comment block.
+
+In Go this is machine-checkable: `revive`'s `exported` rule and staticcheck `ST1021` report
+`comment on exported type X should be of the form "X ..."` when a comment lands on the wrong
+declaration. Keep them enabled; they do not cover unexported declarations, so the manual check
+still applies.
+
+### Caller context belongs at the call site
+
+A doc comment is the contract for every caller, present and future. Rationale that holds for only
+one caller does not belong there.
+
+- **Doc comment**: what the function does, what it returns, what it guarantees, what it requires of
+  any caller, side effects, error cases.
+- **Call-site comment** (`DEV-NOTE:`): why this call is made here, why in this order, why not
+  somewhere else, which other component's behaviour forced it.
+
+Test before writing: *would an unrelated second caller need this sentence?* If no, move it to the
+call site.
+
+A constraint binding on all callers stays in the doc comment, phrased as a requirement (`Callers
+must invoke it before the first tenant snapshot is loaded.`); the reason that requirement exists in
+a given wiring stays at the call site.
+
+Never duplicate the same explanation in both places — the call site wins.
+
+```go
+// PrepareReferenceData persists dev-only tenant configuration in a new transaction.
+// The transaction is committed before the function returns.
+// Callers must invoke it before the first tenant snapshot is loaded.
+func PrepareReferenceData(ctx context.Context, txStarter ql.TxStarter) error { ... }
+
+// DEV-NOTE: seeded here rather than from Bootstrap. TenantsService caches the first
+// tenant snapshot, so seeding later keeps the new rule set invisible until the cache expires.
+if err := devseed.PrepareReferenceData(ctx, txStarter); err != nil {
+```
 
 ## Commits
 
@@ -182,6 +260,8 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Mix US and British spelling (British English only: code identifiers, comments, docs, commit messages, logs, UI copy; exception: third-party API fields and language keywords keep their original spelling, e.g. CSS `color`, `initializeApp`)
 - Pass config to a service via Helm `args:`/`command:` when an env variable would do (golden chart template: env only; no other way → inform user, wait for confirmation)
 - Assume business logic
+- Insert a new declaration between an existing comment block and the declaration it documents (anchor edits on the first line of the comment block, not the declaration line)
+- Put one caller's rationale in the callee's doc comment (call-site `DEV-NOTE:` instead; doc comment keeps only constraints binding on all callers)
 - Write doc comments that anthropomorphise a system (`verbatim from the provider when it says`) instead of naming the source (`verbatim from the provider response, when present`)
 - Remove DEV- comments
 - Use emojis in documentation, commit messages, or any written output
