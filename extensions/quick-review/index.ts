@@ -22,10 +22,29 @@ import { fileURLToPath } from "node:url";
 
 import {
 	lastAssistantText,
+	parseFindings,
 	parseVerdict,
 	promptBody,
 	shouldAutoReview,
 } from "./gate.mjs";
+
+const RESET = "\x1b[0m";
+const colour = (rgb: string, s: string, bold = false) =>
+	`\x1b[${bold ? "1;" : ""}38;2;${rgb}m${s}${RESET}`;
+
+const VERDICT_COLOUR: Record<string, string> = {
+	PASS: "126;211;33",
+	CONCERNS: "240;173;78",
+	FAIL: "229;79;79",
+};
+const SEVERITY_COLOUR: Record<string, string> = {
+	HIGH: "229;79;79",
+	MED: "240;173;78",
+	LOW: "130;150;170",
+};
+const DIM = "130;150;170";
+const WIDGET_KEY = "quick-review";
+const MAX_WIDGET_FINDINGS = 6;
 
 const FOLLOW_UP_PROMPT =
 	"Address the quick-review findings above. Fix the HIGH and MED items first, " +
@@ -65,14 +84,46 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(body, { deliverAs: "followUp" });
 	}
 
+	/** Renders the verdict and the top findings as a coloured widget above the editor. */
+	function renderPanel(
+		ctx: ExtensionContext,
+		verdict: string,
+		findings: ReturnType<typeof parseFindings>,
+	) {
+		const head = colour(
+			VERDICT_COLOUR[verdict] ?? DIM,
+			`  quick review: ${verdict}`,
+			true,
+		);
+		const counts = ["HIGH", "MED", "LOW"]
+			.map((s) => [s, findings.filter((f) => f.severity === s).length] as const)
+			.filter(([, n]) => n > 0)
+			.map(([s, n]) => colour(SEVERITY_COLOUR[s], `${n} ${s}`))
+			.join(colour(DIM, " · "));
+
+		const lines = [counts ? `${head}  ${counts}` : head];
+		for (const f of findings.slice(0, MAX_WIDGET_FINDINGS)) {
+			lines.push(
+				`  ${colour(SEVERITY_COLOUR[f.severity], f.severity.padEnd(4))} ` +
+					`${colour("110;180;230", f.location)} ${colour(DIM, "—")} ${f.finding}`,
+			);
+		}
+		const rest = findings.length - MAX_WIDGET_FINDINGS;
+		if (rest > 0) lines.push(colour(DIM, `  +${rest} more in the report above`));
+		ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
+	}
+
 	/**
 	 * Asks whether the agent should keep working on the findings, and hands the
 	 * review output back as the context for that work.
 	 */
 	async function offerFollowUp(messages: unknown[], ctx: ExtensionContext) {
-		const verdict = parseVerdict(lastAssistantText(messages as never[]));
+		const text = lastAssistantText(messages as never[]);
+		const verdict = parseVerdict(text);
+		if (!verdict || !ctx.hasUI) return;
+
+		renderPanel(ctx, verdict, parseFindings(text));
 		if (verdict !== "CONCERNS" && verdict !== "FAIL") return;
-		if (!ctx.hasUI) return;
 
 		const ok = await ctx.ui.confirm(
 			`Quick review: ${verdict}`,
@@ -80,6 +131,12 @@ export default function (pi: ExtensionAPI) {
 		);
 		if (ok) pi.sendUserMessage(FOLLOW_UP_PROMPT, { deliverAs: "followUp" });
 	}
+
+	// DEV-NOTE: the panel describes one specific review, so it is dropped as soon as
+	// the next turn starts rather than lingering over unrelated work.
+	pi.on("turn_start", async (_event, ctx) => {
+		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+	});
 
 	pi.on("agent_end", async (event, ctx) => {
 		// DEV-NOTE: sendUserMessage starts another agent loop, which ends in this same

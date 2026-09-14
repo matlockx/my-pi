@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
 	lastAssistantText,
 	MAX_AUTO_REVIEWS,
+	parseFindings,
 	parseVerdict,
 	promptBody,
 	shouldAutoReview,
@@ -95,4 +96,44 @@ test("lastAssistantText joins the text blocks of the final assistant message", (
 test("lastAssistantText returns empty string when no assistant message exists", () => {
 	assert.equal(lastAssistantText([{ role: "user", content: "x" }]), "");
 	assert.equal(lastAssistantText(undefined), "");
+});
+
+test("parseFindings reads severity, location, finding and fix from report lines", () => {
+	const findings = parseFindings(
+		[
+			"VERDICT: CONCERNS",
+			"## Findings",
+			"MED cmd/pr_context.go:217-221 — doc comment orphaned → move it back down",
+			"  - **LOW** `cmd/pr_context.go:165` — prefix too broad -> drop it",
+			"LOW cmd/pr_context.go:173 — no arrow here",
+			"not a finding line",
+			"## Summary",
+			"LOW risk overall — nothing to do here → ignore",
+		].join("\n"),
+	);
+	assert.deepEqual(findings, [
+		{
+			severity: "MED",
+			location: "cmd/pr_context.go:217-221",
+			finding: "doc comment orphaned",
+			fix: "move it back down",
+		},
+		{
+			severity: "LOW",
+			location: "cmd/pr_context.go:165",
+			finding: "prefix too broad",
+			fix: "drop it",
+		},
+		{
+			severity: "LOW",
+			location: "cmd/pr_context.go:173",
+			finding: "no arrow here",
+			fix: "",
+		},
+	]);
+});
+
+test("parseFindings returns an empty list for a clean report", () => {
+	assert.deepEqual(parseFindings("VERDICT: PASS\n## Findings\n\nnone"), []);
+	assert.deepEqual(parseFindings(undefined), []);
 });

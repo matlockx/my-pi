@@ -14,23 +14,29 @@ Check exactly these four areas, in this order:
 3. **Design and scope** — changes beyond what was requested, duplicated logic that already exists elsewhere in the repo, a new abstraction with one implementation, business rule contradicting a `docs/bdr/` record.
 4. **Test coverage** — every new or changed function with behaviour has a test in this change; decision-record rules have a `TestBDR###R#`-style test; assertions were not weakened to make code pass.
 
-Report format — nothing else:
+Report format — exactly this, nothing else:
 
 ```text
 VERDICT: PASS | CONCERNS | FAIL
 
+## Findings
+
 <severity> <file>:<line> — <finding, one line> → <fix, one line>
+
+## Not inspected
+
+<one line, or "nothing">
 ```
 
-Severity is `HIGH`, `MED`, or `LOW`. List at most eight findings, highest severity first. No findings in an area means that area is silent — do not write "looks good" lines. Close with one line naming anything you deliberately did not inspect.
+Severity is `HIGH`, `MED`, or `LOW`, written bare at the start of the line — no list marker, no bold, no indentation, since the finding lines are parsed for the review panel. Keep `<file>:<line>` a single unspaced token. List at most eight findings, highest severity first. No findings in an area means that area is silent — do not write "looks good" lines. Write `## Findings` followed by `none` when there are none.
 
 `PASS` means nothing blocks a commit. `CONCERNS` means commit is possible but a named issue should be fixed first. `FAIL` means a HIGH finding is present.
 
-After the findings, close with two blocks:
+After that, close with two more sections:
 
-**Summary** — two or three lines: what the change does, and the one thing to watch.
+`## Summary` — two or three lines: what the change does, and the one thing to watch.
 
-**Commit message** — Conventional Commits style, ready to paste:
+`## Commit message` — Conventional Commits style, ready to paste:
 
 ```text
 <type>(<scope>): <subject, imperative, max 72 chars>

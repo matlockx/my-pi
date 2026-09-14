@@ -62,6 +62,48 @@ export function parseVerdict(text) {
 }
 
 /**
+ * Reads the finding lines out of a quick-review report.
+ *
+ * Matches the report format `<SEVERITY> <file>:<line> — <finding> → <fix>`, with or
+ * without surrounding markdown emphasis and list markers. Only the `## Findings`
+ * section is scanned, so prose elsewhere in the report cannot produce a finding.
+ * `finding` and `fix` are split on the arrow; `fix` is "" when the line carries none.
+ *
+ * @param {string} text The assistant's review output.
+ * @returns {Array<{severity: "HIGH"|"MED"|"LOW", location: string, finding: string, fix: string}>} Findings in report order.
+ */
+export function parseFindings(text) {
+ const pattern =
+  /^[\s>*-]*(?:\*\*)?(HIGH|MED|LOW)(?:\*\*)?\s+`?([^\s`]+?)`?\s+[—–-]\s+(.+)$/gim;
+ const findings = [];
+ for (const match of findingsSection(text ?? "").matchAll(pattern)) {
+  const [finding, fix = ""] = match[3].split(/\s*(?:→|->)\s*/, 2);
+  findings.push({
+   severity: /** @type {"HIGH"|"MED"|"LOW"} */ (match[1].toUpperCase()),
+   location: match[2],
+   finding: finding.trim(),
+   fix: fix.trim(),
+  });
+ }
+ return findings;
+}
+
+/**
+ * Returns the body of the `## Findings` section, or the whole text when the report
+ * carries no such heading.
+ *
+ * @param {string} text The assistant's review output.
+ * @returns {string} The section body.
+ */
+function findingsSection(text) {
+ const start = /^#{1,6}\s*Findings\s*$/im.exec(text);
+ if (!start) return text;
+ const body = text.slice(start.index + start[0].length);
+ const end = /^#{1,6}\s+\S/m.exec(body);
+ return end ? body.slice(0, end.index) : body;
+}
+
+/**
  * Strips YAML frontmatter from a prompt file so the body can be sent as a user message.
  *
  * @param {string} markdown Raw prompt file contents.
