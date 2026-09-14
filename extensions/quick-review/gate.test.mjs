@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MAX_AUTO_REVIEWS, promptBody, shouldAutoReview } from "./gate.mjs";
+import {
+	lastAssistantText,
+	MAX_AUTO_REVIEWS,
+	parseVerdict,
+	promptBody,
+	shouldAutoReview,
+} from "./gate.mjs";
 
 test("shouldAutoReview triggers for an unseen dirty tree", () => {
 	const result = shouldAutoReview({
@@ -57,4 +63,36 @@ test("promptBody strips frontmatter and keeps the body", () => {
 
 test("promptBody passes through a file without frontmatter", () => {
 	assert.equal(promptBody("Do a review.\n"), "Do a review.");
+});
+
+test("parseVerdict reads each verdict, bold or plain", () => {
+	assert.equal(parseVerdict("VERDICT: PASS\n"), "PASS");
+	assert.equal(parseVerdict("**VERDICT**: CONCERNS\n"), "CONCERNS");
+	assert.equal(parseVerdict("intro\n\nVERDICT: FAIL\n\nHIGH x"), "FAIL");
+});
+
+test("parseVerdict returns null without a verdict line", () => {
+	assert.equal(parseVerdict("no verdict here"), null);
+	assert.equal(parseVerdict(undefined), null);
+});
+
+test("lastAssistantText joins the text blocks of the final assistant message", () => {
+	const text = lastAssistantText([
+		{ role: "assistant", content: "older" },
+		{ role: "user", content: "prompt" },
+		{
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "hidden" },
+				{ type: "text", text: "VERDICT: FAIL" },
+				{ type: "text", text: "HIGH main.go:1" },
+			],
+		},
+	]);
+	assert.equal(text, "VERDICT: FAIL\nHIGH main.go:1");
+});
+
+test("lastAssistantText returns empty string when no assistant message exists", () => {
+	assert.equal(lastAssistantText([{ role: "user", content: "x" }]), "");
+	assert.equal(lastAssistantText(undefined), "");
 });

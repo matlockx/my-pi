@@ -25,6 +25,43 @@ export function shouldAutoReview({ hash, reviewed, count, disabled = false }) {
 }
 
 /**
+ * Concatenates the text blocks of the last assistant message in a turn.
+ *
+ * @param {Array<{role?: string, content?: unknown}>} messages Messages as delivered by agent_end.
+ * @returns {string} The assistant text, or "" when the turn produced none.
+ */
+export function lastAssistantText(messages) {
+ for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+  const message = messages[i];
+  if (message?.role !== "assistant") continue;
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+   .filter((block) => block?.type === "text" && typeof block.text === "string")
+   .map((block) => block.text)
+   .join("\n");
+ }
+ return "";
+}
+
+/**
+ * Reads the verdict out of a quick-review report.
+ *
+ * @param {string} text The assistant's review output.
+ * @returns {"PASS"|"CONCERNS"|"FAIL"|null} The verdict, or null when the report carries no verdict line.
+ */
+export function parseVerdict(text) {
+ const match =
+  /^\s*(?:\*\*)?VERDICT(?:\*\*)?\s*:\s*(PASS|CONCERNS|FAIL)\b/im.exec(
+   text ?? "",
+  );
+ return match
+  ? /** @type {"PASS"|"CONCERNS"|"FAIL"} */ (match[1].toUpperCase())
+  : null;
+}
+
+/**
  * Strips YAML frontmatter from a prompt file so the body can be sent as a user message.
  *
  * @param {string} markdown Raw prompt file contents.

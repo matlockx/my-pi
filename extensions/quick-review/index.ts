@@ -20,7 +20,17 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { promptBody, shouldAutoReview } from "./gate.mjs";
+import {
+	lastAssistantText,
+	parseVerdict,
+	promptBody,
+	shouldAutoReview,
+} from "./gate.mjs";
+
+const FOLLOW_UP_PROMPT =
+	"Address the quick-review findings above. Fix the HIGH and MED items first, " +
+	"skip anything you judge a false positive and say why in one line, and add or " +
+	"update the tests the findings call for. Do not commit.";
 
 const PROMPT_PATH = fileURLToPath(
 	new URL("../../prompts/quick-review.md", import.meta.url),
@@ -50,15 +60,34 @@ export default function (pi: ExtensionAPI) {
 		count += 1;
 		if (ctx.hasUI)
 			ctx.ui.notify("Auto quick-review of uncommitted changes", "info");
-		pi.sendUserMessage(body);
+		// DEV-NOTE: agent_end fires while the runner still counts as processing, so an
+		// unqueued sendUserMessage is rejected with "Agent is already processing".
+		pi.sendUserMessage(body, { deliverAs: "followUp" });
 	}
 
-	pi.on("agent_end", async (_event, ctx) => {
+	/**
+	 * Asks whether the agent should keep working on the findings, and hands the
+	 * review output back as the context for that work.
+	 */
+	async function offerFollowUp(messages: unknown[], ctx: ExtensionContext) {
+		const verdict = parseVerdict(lastAssistantText(messages as never[]));
+		if (verdict !== "CONCERNS" && verdict !== "FAIL") return;
+		if (!ctx.hasUI) return;
+
+		const ok = await ctx.ui.confirm(
+			`Quick review: ${verdict}`,
+			"The review found issues. Work on them now?",
+		);
+		if (ok) pi.sendUserMessage(FOLLOW_UP_PROMPT, { deliverAs: "followUp" });
+	}
+
+	pi.on("agent_end", async (event, ctx) => {
 		// DEV-NOTE: sendUserMessage starts another agent loop, which ends in this same
 		// handler. `running` drops that echo; the fingerprint set and the budget in
 		// gate.mjs stop a review/fix ping-pong from looping indefinitely.
 		if (running) {
 			running = false;
+			await offerFollowUp(event.messages, ctx);
 			return;
 		}
 
