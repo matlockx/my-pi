@@ -35,7 +35,7 @@ If the user modifies the plan, print the revised plan and confirm again.
 Order matters. Each phase feeds the next.
 
 | Phase | Areas | Why here |
-|---|---|---|
+| --- | --- | --- |
 | 0 | `records` | Produces the constraint list every later area is filtered through |
 | 1 | `docs`, `layering` | Establishes what the service claims to be vs what it is |
 | 2 | `security`, `persistence`, `concurrency` | Highest-consequence areas, reviewed while context is freshest |
@@ -104,7 +104,7 @@ same task" doc rule broken is CRITICAL, a style preference is MINOR).
 Skip rules:
 
 | Not detected | Skip |
-|---|---|
+| --- | --- |
 | No `sql/` or `migrations/`, no `database/sql` import | `persistence` |
 | No messaging client import | `concurrency`: the at-least-once half only; keep the concurrency half |
 | No `docs/adr` and no `docs/bdr` | `records` becomes a single finding: "no decision records" (MAJOR), not a full area |
@@ -114,7 +114,7 @@ Skip rules:
 ## Step 2 — Intake questions
 
 | # | Question | Default |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Scope: whole repo, one package, or diff vs `main`? | whole repo |
 | 2 | Areas: all applicable, or a subset? | all detected-applicable |
 | 3 | Any area to deep-dive beyond the checklist? | none |
@@ -208,7 +208,7 @@ Reference shape (multi-stage, org builder pinned to the `go.mod` version, distro
 runtime, binary plus migrations only):
 
 ```dockerfile
-FROM <registry>/golang-builder:1.26.2-trixie AS builder
+FROM <registry>/golang-builder:1.27-trixie AS builder
 FROM <registry>/base-image:distroless-debian13
 COPY /sql /sql
 COPY --from=builder /out/binary /service
@@ -217,6 +217,7 @@ CMD ["--verbose"]
 ```
 
 Manual, beyond the linter:
+
 - Error wrapping carries context (`fmt.Errorf("doing X: %w", err)`), `errors.Is/As` only.
 - Panic only at startup or in tests.
 - Goroutines have a shutdown path and cannot leak.
@@ -231,6 +232,7 @@ rg -n '^\t"github.com/<module>/internal' --type go | sort | uniq -c
 ```
 
 Findings:
+
 - Repository package imported from a handler (skips the service layer). **CRITICAL**
 - HTTP framework types (`echo.Context`, `http.Request`) in the service or repository
   layer. **CRITICAL**
@@ -274,6 +276,7 @@ rg -n 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go
 ```
 
 Findings:
+
 - A numbered rule with no test naming it. **CRITICAL**
 - A test naming a rule no record declares (rename drift). **CRITICAL**
 - A rule without an `## Observability` row naming its history item, metric, and log.
@@ -386,6 +389,7 @@ only protects anything if the deployment enforces it.
    authorisation check beyond network placement. **CRITICAL**, name the route.
 
 Then:
+
 - Webhook authenticity: signature verified before any parsing that has side effects,
   constant-time comparison, per-tenant secret, replay window or event-id dedupe.
   **BLOCKER** if missing.
@@ -468,7 +472,7 @@ request talk to, and which hop was slow" without reading code.
 **Trace entry points — each one must start or continue a trace:**
 
 | Entry | Expected | Missing = |
-|---|---|---|
+| --- | --- | --- |
 | HTTP server | Tracing middleware on the router (`st.Tracing(service, "serve")`), continuing the inbound trace context header | **CRITICAL** |
 | Incoming Kafka/queue message | A span started per message, **linked to the producer's trace** via the propagated context in the message headers — not a fresh unrelated root | **CRITICAL** |
 | Cron / scheduled job | A root span per execution, named after the job, so a slow or failing sweep is visible at all | **MAJOR** |
@@ -591,7 +595,7 @@ a correctness risk, in which case keep the risk's own severity.
 ## Severity definitions
 
 | Severity | Meaning | Action |
-|---|---|---|
+| --- | --- | --- |
 | BLOCKER | Exploitable, or loses money or data, now | Fix before next deploy |
 | CRITICAL | Will cause an incident or a wrong business outcome | Fix this sprint |
 | MAJOR | Correctness or maintainability risk, no immediate incident | Schedule |

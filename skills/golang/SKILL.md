@@ -15,12 +15,12 @@ Guide writing and reviewing Go code compliant with SonarCloud SonarGo, golangci-
 
 ## Go version
 
-**Always use Go 1.26+.** Never target or reference older versions (1.22, 1.23, 1.24, etc.) in generated code, `go.mod`, or configs.
+**Always use Go 1.27+.** Never target or reference older versions (1.22, 1.23, 1.24, etc.) in generated code, `go.mod`, or configs.
 
 All modern features are baseline — use them freely:
 
 | Feature | Example |
-|---------|---------|
+| --------- | --------- |
 | Range-over-int | `for i := range 10 { ... }` |
 | Per-iteration loop vars | `for _, item := range items { go func() { process(item) }() }` — safe, no shadowing |
 | Range-over-func (iterators) | `func All[T any](s []T) iter.Seq2[int, T] { ... }` |
@@ -31,16 +31,20 @@ All modern features are baseline — use them freely:
 ## Project setup
 
 ### Module structure
+
 Every project MUST have `go.mod` at root. Always `go mod tidy` before committing. Commit `go.sum`.
 
 ### Local lib development (MUST FOLLOW)
+
 When changing a lib and using it directly in the current project, use a `go.work` file. NEVER add a `replace` entry to `go.mod`. `replace` pollutes the committed module and breaks other consumers; `go.work` stays local and is gitignored.
+
 ```
 go work init
 go work use . ../mylib
 ```
 
 ### Standard layout
+
 ```
 project/
 ├── cmd/myapp/main.go       # Main apps (minimal: parse flags, wire deps, call internal/)
@@ -52,15 +56,17 @@ project/
 ├── api/                    # API definitions (OpenAPI, protobuf)
 ├── go.mod, go.sum, .golangci.yml, Makefile
 ```
+
 - Never create packages named `util`, `common`, `misc`, `helpers`, `base`.
 - Avoid stutter: `http.Server` not `http.HTTPServer`.
 
 ### golangci-lint config (.golangci.yml)
+
 ```yaml
 version: "2"
 run:
   timeout: 5m
-  go: "1.26"  # minimum — never target older versions
+  go: "1.27"  # minimum — never target older versions
 linters:
   default: standard
   enable:
@@ -110,6 +116,7 @@ exclusions:
 ## Preferred libraries
 
 ### Testing
+
 | Library | Purpose |
 |---------|---------|
 | `net/http/httptest` | HTTP handler/server testing (stdlib) |
@@ -129,6 +136,7 @@ func TestHandler(t *testing.T) {
     assert.Equal(t, http.StatusOK, rec.Code)
 }
 ```
+
 - Use `require` for fatal preconditions, `assert` for non-fatal checks.
 - Use `require.NoError(t, err)` not `if err != nil { t.Fatal(err) }`.
 
@@ -156,7 +164,7 @@ rg -o 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go  # rules covered
 #### Test layers
 
 | Layer | Location | Answers |
-|-------|----------|---------|
+| ------- | ---------- | --------- |
 | contract | `internal/client/*/client_test.go` | every documented status+code of a peer maps to the right classification (retryable vs permanent verdict vs contract fault) |
 | flow | DB-backed harness (`testx.NewConnection`) | one business rule end to end: HTTP or consumer in, DB + events + history + metrics out |
 | unit | package-local | pure logic, `synctest` for anything clock-driven |
@@ -165,12 +173,13 @@ A peer returning a generic wrapper (echo/startup turns a route miss into `404` w
 `Internal`) means status alone never classifies an error — assert on status **and** code.
 
 ### Application framework — `github.com/flachnetz/startup/v2`
+
 Opinionated application bootstrap: flags, logging, metrics, tracing, Postgres, Kafka events, HTTP server, JWT auth.
 
 **Main packages:**
 
 | Import | Alias | Purpose |
-|--------|-------|---------|
+| -------- | ------- | --------- |
 | `startup/v2` | — | `MustParseCommandLine`, app entrypoint |
 | `startup/v2/startup_base` | `sb` | `FatalOnError`, `Close`, `BaseOptions` |
 | `startup/v2/startup_http` | `sht` | `HTTPOptions`, `Serve(Config{...})` |
@@ -183,7 +192,7 @@ Opinionated application bootstrap: flags, logging, metrics, tracing, Postgres, K
 **Lib packages:**
 
 | Import | Purpose |
-|--------|---------|
+| -------- | --------- |
 | `lib/api` | `startupapi.Error` — structured API errors with HTTP status |
 | `lib/api/echo` | `CustomErrorHandler` for echo error responses |
 | `lib/jwt` | `TokenVerifier`, `NewTokenVerifier(ctx, jwksURL)` |
@@ -195,6 +204,7 @@ Opinionated application bootstrap: flags, logging, metrics, tracing, Postgres, K
 | `lib/kafka` | Kafka configuration |
 
 **Typical main.go pattern:**
+
 ```go
 opts := appConfig{}
 opts.Tracing.Inputs.ServiceName = "my-service"
@@ -212,6 +222,7 @@ opts.HTTP.Serve(sht.Config{
 ```
 
 **Test utilities:**
+
 ```go
 // Database + transaction helpers
 db := testx.NewConnection(t, "my_service_migrations")
@@ -228,7 +239,9 @@ signed := store.Sign(jwt.NewBuilder().Subject("player-1").Expiration(time.Now().
 ```
 
 ### HTTP client — `github.com/go-resty/resty/v2`
+
 Fluent HTTP client with retries, middleware, and JSON marshaling.
+
 ```go
 client := resty.New().
     SetBaseURL("https://api.example.com").
@@ -242,11 +255,14 @@ resp, err := client.R().
     SetResult(&result).
     Get("/v1/resource")
 ```
+
 - Always pass `context.Context` via `SetContext(ctx)`.
 - Use `SetResult`/`SetError` for automatic JSON unmarshaling.
 
 ### LRU cache — `github.com/hashicorp/golang-lru/v2`
+
 Generic thread-safe LRU cache.
+
 ```go
 import lru "github.com/hashicorp/golang-lru/v2"
 
@@ -254,11 +270,14 @@ cache, _ := lru.New[string, *User](1000)
 cache.Add("user-123", user)
 if val, ok := cache.Get("user-123"); ok { ... }
 ```
+
 - Use `lru.NewWithEvict` when cleanup is needed on eviction.
 - Use `lru.NewARC` for adaptive replacement cache (scan-resistant).
 
 ### Job scheduling — `github.com/go-co-op/gocron/v2`
+
 Cron-style job scheduler.
+
 ```go
 import "github.com/go-co-op/gocron/v2"
 
@@ -274,13 +293,14 @@ _, _ = s.NewJob(
 s.Start()
 defer func() { _ = s.Shutdown() }()
 ```
+
 - Use `gocron.CronJob("*/5 * * * *")` for cron expressions.
 - Use `gocron.WithSingletonMode(gocron.LimitModeReschedule)` to prevent overlapping runs.
 
 ## Security rules (BLOCKER/CRITICAL)
 
 | Rule | Don't | Do |
-|------|-------|----|
+| ------ | ------- | ---- |
 | **S2068** Hardcoded creds | `const apiKey = "sk-abc"` | `os.Getenv("API_KEY")` |
 | **S4423** Weak TLS | `MinVersion: tls.VersionTLS10` | `MinVersion: tls.VersionTLS12` |
 | **S5527** Skip TLS verify | `InsecureSkipVerify: true` | Default `false` |
@@ -299,7 +319,7 @@ defer func() { _ = s.Shutdown() }()
 ## Reliability rules
 
 | Rule | Summary |
-|------|---------|
+| ------ | --------- |
 | **errcheck** | Every error return MUST be checked — most important Go rule |
 | **bodyclose** | Always `defer resp.Body.Close()` after HTTP calls |
 | **nilerr** | Never `return nil` when `err != nil` |
@@ -322,6 +342,7 @@ defer func() { _ = s.Shutdown() }()
 ## Maintainability rules
 
 ### Naming
+
 - `MixedCaps`/`mixedCaps` only — never `snake_case`
 - Acronyms all-caps: `ID`, `HTTP`, `URL`, `API`, `JSON`, `SQL`
 - Interfaces with single method: method + `er` → `Reader`, `Writer`
@@ -330,12 +351,14 @@ defer func() { _ = s.Shutdown() }()
 - Package: lowercase single word, no underscores
 
 ### Functions
+
 - Max **60 lines / 40 statements** (funlen)
 - Cognitive complexity < **15** (gocognit/cyclop)
 - Max **5 parameters** — use option structs or functional options beyond that
 - `context.Context` always first parameter
 
 ### Code hygiene
+
 - Remove commented-out code (S125)
 - TODO/FIXME must include ticket ref: `// TODO(PROJ-1234): ...`
 - String literal used 3+ times → `const` (goconst)
@@ -344,6 +367,7 @@ defer func() { _ = s.Shutdown() }()
 - Exported functions must have doc comment starting with function name
 
 ### Context keys
+
 ```go
 // Never use built-in types as context keys
 type contextKey string
@@ -354,6 +378,7 @@ ctx = context.WithValue(ctx, userIDKey, id)
 ## Idiomatic patterns
 
 ### Error handling
+
 ```go
 // Wrap with context
 f, err := os.Open(path)
@@ -369,6 +394,7 @@ if errors.As(err, &pathErr) { ... }
 ```
 
 ### Goroutines
+
 - Always recover panics in goroutines
 - Always ensure goroutines can be stopped (context, done channel)
 - Use `errgroup.WithContext` for coordinated goroutines
@@ -383,15 +409,19 @@ if err := g.Wait(); err != nil { ... }
 ```
 
 ### Interfaces
+
 Accept interfaces, return structs. Keep small (1-3 methods). Define at consumer side.
 
 ### Struct init
+
 Always use named fields:
+
 ```go
 srv := Server{Host: "localhost", Port: 8080}
 ```
 
 ### Resource cleanup
+
 ```go
 f, err := os.Open(path)
 if err != nil { return err }
@@ -399,12 +429,15 @@ defer f.Close() // immediately after acquiring
 ```
 
 ### Logging (log/slog)
+
 ```go
 logger.Info("processing", slog.String("method", r.Method), slog.Int("status", code))
 ```
+
 Never `fmt.Println` or `log.Printf` in production.
 
 ### Testing
+
 ```go
 // Table-driven tests
 func TestAdd(t *testing.T) {
@@ -423,6 +456,7 @@ func TestAdd(t *testing.T) {
     }
 }
 ```
+
 - Use `t.Helper()` in helpers, `t.Parallel()` when safe
 - Always `go test -race ./...`
 
@@ -439,6 +473,7 @@ go test -race -coverprofile=c.out ./... && go tool cover -html=c.out  # coverage
 ```
 
 ### Makefile
+
 ```makefile
 .PHONY: fmt vet lint test build check
 fmt:   ; gofumpt -l -w .
