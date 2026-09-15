@@ -16,6 +16,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -32,23 +33,26 @@ import {
 	trackedStatus,
 } from "./gate.mjs";
 
-const RESET = "\x1b[0m";
-const colour = (rgb: string, s: string, bold = false) =>
-	`\x1b[${bold ? "1;" : ""}38;2;${rgb}m${s}${RESET}`;
+/**
+ * Theme tones for the report card. Raw ANSI is avoided: the TUI renders through the
+ * active theme, and a hard-coded colour is unreadable on a light one.
+ */
+const VERDICT_TONE = {
+	PASS: "success",
+	CONCERNS: "warning",
+	FAIL: "error",
+} as const;
+const SEVERITY_TONE = {
+	HIGH: "error",
+	MED: "warning",
+	LOW: "muted",
+} as const;
+const STATUS_KEY = "quick-review";
+const REPORT_TYPE = "quick-review-report";
+const MAX_CARD_FINDINGS = 6;
 
-const VERDICT_COLOUR: Record<string, string> = {
-	PASS: "126;211;33",
-	CONCERNS: "240;173;78",
-	FAIL: "229;79;79",
-};
-const SEVERITY_COLOUR: Record<string, string> = {
-	HIGH: "229;79;79",
-	MED: "240;173;78",
-	LOW: "130;150;170",
-};
-const DIM = "130;150;170";
-const WIDGET_KEY = "quick-review";
-const MAX_WIDGET_FINDINGS = 6;
+type Finding = ReturnType<typeof parseFindings>[number];
+type ReportDetails = { verdict: string; findings: Finding[] };
 
 /**
  * Stands in for the review prompt in the transcript. The chat shows this one line; the
@@ -97,10 +101,8 @@ export default function (pi: ExtensionAPI) {
 	function status(ctx: ExtensionContext) {
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus(
-			WIDGET_KEY,
-			disabled
-				? colour(DIM, "review: off")
-				: `${colour("126;211;33", "review:")} ${colour(DIM, `${count}/${MAX_AUTO_REVIEWS}`)}`,
+			STATUS_KEY,
+			disabled ? "review: off" : `review: ${count}/${MAX_AUTO_REVIEWS}`,
 		);
 	}
 
@@ -129,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 		if (!taskSummary) return;
 		pi.sendMessage({
 			customType: "quick-review-summary",
-			content: `${colour(DIM, "── task summary ──")}\n\n${taskSummary}`,
+			content: `## Task summary\n\n${taskSummary}`,
 			display: true,
 		});
 		taskSummary = "";
@@ -159,33 +161,57 @@ export default function (pi: ExtensionAPI) {
 		return { messages };
 	});
 
-	/** Renders the verdict and the top findings as a coloured widget above the editor. */
-	function renderPanel(
-		ctx: ExtensionContext,
-		verdict: string,
-		findings: ReturnType<typeof parseFindings>,
-	) {
-		const head = colour(
-			VERDICT_COLOUR[verdict] ?? DIM,
-			`  quick review: ${verdict}`,
-			true,
-		);
-		const counts = ["HIGH", "MED", "LOW"]
-			.map((s) => [s, findings.filter((f) => f.severity === s).length] as const)
-			.filter(([, n]) => n > 0)
-			.map(([s, n]) => colour(SEVERITY_COLOUR[s], `${n} ${s}`))
-			.join(colour(DIM, " · "));
+	// DEV-NOTE: the report the model writes is plain text in a fenced block, which no
+	// renderer colours. The card below carries the same verdict and findings as a custom
+	// message, so it is themed, stays in the transcript, and survives the next turn — a
+	// widget above the editor is cleared as soon as work continues.
+	pi.registerMessageRenderer<ReportDetails>(
+		REPORT_TYPE,
+		(message, _options, theme) => {
+			const details = message.details;
+			if (!details) return undefined;
+			const { verdict, findings } = details;
 
-		const lines = [counts ? `${head}  ${counts}` : head];
-		for (const f of findings.slice(0, MAX_WIDGET_FINDINGS)) {
-			lines.push(
-				`  ${colour(SEVERITY_COLOUR[f.severity], f.severity.padEnd(4))} ` +
-					`${colour("110;180;230", f.location)} ${colour(DIM, "—")} ${f.finding}`,
+			const tone = VERDICT_TONE[verdict as keyof typeof VERDICT_TONE] ?? "muted";
+			const counts = (["HIGH", "MED", "LOW"] as const)
+				.map((s) => [s, findings.filter((f) => f.severity === s).length] as const)
+				.filter(([, n]) => n > 0)
+				.map(([s, n]) => theme.fg(SEVERITY_TONE[s], `${n} ${s}`))
+				.join(theme.fg("dim", " · "));
+
+			const container = new Container();
+			container.addChild(
+				new Text(
+					`${theme.fg(tone, theme.bold(`quick review: ${verdict}`))}${
+						counts ? `  ${counts}` : ""
+					}`,
+				),
 			);
-		}
-		const rest = findings.length - MAX_WIDGET_FINDINGS;
-		if (rest > 0) lines.push(colour(DIM, `  +${rest} more in the report above`));
-		ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
+			for (const f of findings.slice(0, MAX_CARD_FINDINGS)) {
+				container.addChild(
+					new Text(
+						`${theme.fg(SEVERITY_TONE[f.severity], f.severity.padEnd(4))} ` +
+							`${theme.fg("accent", f.location)} ${theme.fg("dim", "—")} ${f.finding}`,
+					),
+				);
+			}
+			const rest = findings.length - MAX_CARD_FINDINGS;
+			if (rest > 0)
+				container.addChild(
+					new Text(theme.fg("dim", `+${rest} more in the report above`)),
+				);
+			return container;
+		},
+	);
+
+	/** Posts the verdict and the top findings as a themed card in the transcript. */
+	function renderReport(verdict: string, findings: Finding[]) {
+		pi.sendMessage<ReportDetails>({
+			customType: REPORT_TYPE,
+			content: `quick review: ${verdict}`,
+			display: true,
+			details: { verdict, findings },
+		});
 	}
 
 	/**
@@ -198,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 		if (!verdict || !ctx.hasUI) return false;
 
 		const findings = parseFindings(text);
-		renderPanel(ctx, verdict, findings);
+		renderReport(verdict, findings);
 
 		const { action, actionable } = fixDecision(findings);
 		if (action === "none") return false;
@@ -222,8 +248,6 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
-	// DEV-NOTE: the panel describes one specific review, so it is dropped as soon as
-	// the next turn starts rather than lingering over unrelated work.
 	// DEV-NOTE: the baseline is taken here rather than counting write tool calls, so a turn
 	// that changed files through bash (sed, heredoc, git apply) is reviewed like any other.
 	// The auto-review's own follow-up message also starts a turn, which rebaselines before
@@ -235,7 +259,6 @@ export default function (pi: ExtensionAPI) {
 		if (phase === "idle") count = 0;
 		baseline = await diffFingerprint(ctx.cwd);
 		status(ctx);
-		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
