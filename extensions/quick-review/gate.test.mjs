@@ -21,7 +21,7 @@ test("shouldAutoReview triggers for an unseen dirty tree", () => {
 		count: 0,
 		edited: true,
 	});
-	assert.deepEqual(result, { review: true, reason: "changed" });
+	assert.deepEqual(result, { review: true, ask: false, reason: "changed" });
 });
 
 test("shouldAutoReview stays silent on a clean tree", () => {
@@ -38,6 +38,7 @@ test("shouldAutoReview reviews each diff fingerprint only once", () => {
 		shouldAutoReview({ hash: "abc", reviewed, count: 1, edited: true }),
 		{
 			review: false,
+			ask: false,
 			reason: "already-reviewed",
 		},
 	);
@@ -47,14 +48,18 @@ test("shouldAutoReview reviews each diff fingerprint only once", () => {
 	);
 });
 
-test("shouldAutoReview stops at the session budget", () => {
+test("shouldAutoReview asks instead of skipping past the budget", () => {
 	const result = shouldAutoReview({
 		hash: "new",
 		reviewed: new Set(),
 		count: MAX_AUTO_REVIEWS,
 		edited: true,
 	});
-	assert.deepEqual(result, { review: false, reason: "budget-exhausted" });
+	assert.deepEqual(result, {
+		review: true,
+		ask: true,
+		reason: "budget-exhausted",
+	});
 });
 
 test("shouldAutoReview honours the opt-out", () => {
@@ -65,7 +70,7 @@ test("shouldAutoReview honours the opt-out", () => {
 		disabled: true,
 		edited: true,
 	});
-	assert.deepEqual(result, { review: false, reason: "disabled" });
+	assert.deepEqual(result, { review: false, ask: false, reason: "disabled" });
 });
 
 test("promptBody strips frontmatter and keeps the body", () => {
@@ -156,7 +161,7 @@ test("shouldAutoReview skips a turn that changed no file", () => {
 		count: 0,
 		edited: false,
 	});
-	assert.deepEqual(decision, { review: false, reason: "no-edits" });
+	assert.deepEqual(decision, { review: false, ask: false, reason: "no-edits" });
 });
 
 test("trackedStatus drops untracked entries", () => {

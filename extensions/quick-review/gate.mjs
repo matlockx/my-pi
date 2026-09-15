@@ -2,7 +2,12 @@
  * Decision logic for the auto quick-review gate, kept free of pi APIs so it is testable.
  */
 
-/** Maximum auto-reviews per session, guarding against review/fix ping-pong. */
+/**
+ * Auto-reviews allowed per user request before the extension stops deciding on its own.
+ *
+ * The counter is reset by every user-initiated turn, so it bounds one review/fix
+ * ping-pong rather than the session: a long session earns a review per request.
+ */
 export const MAX_AUTO_REVIEWS = 3;
 
 /**
@@ -40,11 +45,11 @@ export function fixDecision(findings) {
  * @param {object} input
  * @param {string} input.hash Fingerprint of the current uncommitted diff. Empty string means a clean tree.
  * @param {Set<string>} input.reviewed Fingerprints already reviewed in this session.
- * @param {number} input.count Auto-reviews already triggered in this session.
+ * @param {number} input.count Auto-reviews already triggered for the current user request.
  * @param {boolean} [input.edited] True when the tracked tree changed during the finished
  *   turn. Defaults to false, so a caller that omits it never triggers a review.
  * @param {boolean} [input.disabled] True when the user opted out for this session.
- * @returns {{review: boolean, reason: string}} `reason` names the rule that decided, for logging.
+ * @returns {{review: boolean, ask: boolean, reason: string}} `ask` requires the user to confirm the review first; `reason` names the rule that decided, for logging.
  */
 export function shouldAutoReview({
  hash,
@@ -53,13 +58,16 @@ export function shouldAutoReview({
  edited = false,
  disabled = false,
 }) {
- if (disabled) return { review: false, reason: "disabled" };
- if (!hash) return { review: false, reason: "clean-tree" };
- if (!edited) return { review: false, reason: "no-edits" };
- if (reviewed.has(hash)) return { review: false, reason: "already-reviewed" };
+ if (disabled) return { review: false, ask: false, reason: "disabled" };
+ if (!hash) return { review: false, ask: false, reason: "clean-tree" };
+ if (!edited) return { review: false, ask: false, reason: "no-edits" };
+ if (reviewed.has(hash))
+  return { review: false, ask: false, reason: "already-reviewed" };
+ // DEV-NOTE: past the budget the review is offered rather than dropped. Silence here
+ // is the worse failure: the run that has already looped twice is the one worth reading.
  if (count >= MAX_AUTO_REVIEWS)
-  return { review: false, reason: "budget-exhausted" };
- return { review: true, reason: "changed" };
+  return { review: true, ask: true, reason: "budget-exhausted" };
+ return { review: true, ask: false, reason: "changed" };
 }
 
 /**

@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import {
 	fixDecision,
 	lastAssistantText,
+	MAX_AUTO_REVIEWS,
 	messageText,
 	parseFindings,
 	parseVerdict,
@@ -89,6 +90,19 @@ export default function (pi: ExtensionAPI) {
 	let baseline = "";
 	let reviewBody = "";
 	let taskSummary = "";
+	/** Rule that decided the last agent_end, reported by /quick-review-auto status. */
+	let lastReason = "none yet";
+
+	/** Renders the on/off state and the remaining budget in the status line. */
+	function status(ctx: ExtensionContext) {
+		if (!ctx.hasUI) return;
+		ctx.ui.setStatus(
+			WIDGET_KEY,
+			disabled
+				? colour(DIM, "review: off")
+				: `${colour("126;211;33", "review:")} ${colour(DIM, `${count}/${MAX_AUTO_REVIEWS}`)}`,
+		);
+	}
 
 	/** Fingerprints the tracked uncommitted changes; "" for a clean tree or a non-git directory. */
 	async function diffFingerprint(cwd: string): Promise<string> {
@@ -214,8 +228,13 @@ export default function (pi: ExtensionAPI) {
 	// that changed files through bash (sed, heredoc, git apply) is reviewed like any other.
 	// The auto-review's own follow-up message also starts a turn, which rebaselines before
 	// the fix turn runs — exactly what the next review needs.
+	// DEV-NOTE: the budget bounds one review/fix ping-pong, not the session. A turn that
+	// starts outside the cycle came from the user, and their next request earns a fresh
+	// budget — a long session is more worth reviewing, not less.
 	pi.on("turn_start", async (_event, ctx) => {
+		if (phase === "idle") count = 0;
 		baseline = await diffFingerprint(ctx.cwd);
+		status(ctx);
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 
@@ -237,14 +256,24 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const hash = await diffFingerprint(ctx.cwd);
-		const { review } = shouldAutoReview({
+		const { review, ask, reason } = shouldAutoReview({
 			hash,
 			reviewed,
 			count,
 			edited: hash !== baseline,
 			disabled,
 		});
+		lastReason = reason;
 		if (!review) return;
+
+		if (ask) {
+			if (!ctx.hasUI) return;
+			const ok = await ctx.ui.confirm(
+				"Quick review",
+				`${count} auto-reviews already ran for this request. Review the changes again?`,
+			);
+			if (!ok) return;
+		}
 
 		// DEV-NOTE: the turn that is ending carries the summary of the real task. The
 		// review and the fix turn push it out of sight, so it is held here and replayed
@@ -254,14 +283,33 @@ export default function (pi: ExtensionAPI) {
 		await runReview(ctx, hash);
 	});
 
+	pi.on("session_start", async (_event, ctx) => status(ctx));
+
 	pi.registerCommand("quick-review-auto", {
-		description: "Toggle the automatic quick review at the end of an agent turn",
+		description:
+			"Toggle the automatic quick review at the end of an agent turn (on|off|status)",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
-			if (arg === "on") disabled = false;
-			else if (arg === "off") disabled = true;
+			if (arg === "status") {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`Auto quick-review ${disabled ? "disabled" : "enabled"} · ` +
+							`${count}/${MAX_AUTO_REVIEWS} used · phase ${phase} · last decision: ${lastReason}`,
+						"info",
+					);
+				}
+				return;
+			}
+			if (arg === "on") {
+				disabled = false;
+				// DEV-NOTE: an explicit "on" is also the way out of a stuck phase, which would
+				// otherwise swallow the next agent_end as a review echo.
+				count = 0;
+				phase = "idle";
+			} else if (arg === "off") disabled = true;
 			else disabled = !disabled;
 
+			status(ctx);
 			if (ctx.hasUI) {
 				ctx.ui.notify(
 					`Auto quick-review ${disabled ? "disabled" : "enabled"} for this session`,
