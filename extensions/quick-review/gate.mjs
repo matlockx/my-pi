@@ -6,6 +6,35 @@
 export const MAX_AUTO_REVIEWS = 3;
 
 /**
+ * Largest number of HIGH/MED findings the agent fixes without asking. Above it the fix
+ * turn is a change of its own size, which is the user's call to make.
+ */
+export const AUTO_FIX_LIMIT = 3;
+
+/**
+ * Decides how the findings of a review are followed up.
+ *
+ * HIGH and MED findings are defects; up to AUTO_FIX_LIMIT of them are fixed without
+ * asking. A larger batch is proposed instead, as is a report that carries only LOW
+ * findings, which are improvements rather than defects.
+ *
+ * @param {Array<{severity: "HIGH"|"MED"|"LOW"}>} findings Findings in report order.
+ * @returns {{action: "auto"|"ask"|"none", actionable: number, reason: string}} `reason` names the rule that decided, for logging.
+ */
+export function fixDecision(findings) {
+ const list = findings ?? [];
+ const actionable = list.filter(
+  (f) => f.severity === "HIGH" || f.severity === "MED",
+ ).length;
+
+ if (list.length === 0) return { action: "none", actionable, reason: "clean" };
+ if (actionable === 0) return { action: "ask", actionable, reason: "low-only" };
+ if (actionable > AUTO_FIX_LIMIT)
+  return { action: "ask", actionable, reason: "over-limit" };
+ return { action: "auto", actionable, reason: "defects" };
+}
+
+/**
  * Decides whether an agent_end should trigger an automatic quick review.
  *
  * @param {object} input

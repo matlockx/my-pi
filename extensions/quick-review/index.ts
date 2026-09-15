@@ -21,6 +21,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import {
+	fixDecision,
 	lastAssistantText,
 	messageText,
 	parseFindings,
@@ -54,10 +55,26 @@ const MAX_WIDGET_FINDINGS = 6;
  */
 const REVIEW_MARKER = "Quick review of the uncommitted changes.";
 
-const FOLLOW_UP_PROMPT =
+/**
+ * Instructs the fix turn and hands it the summary of the original task.
+ *
+ * The fix turn ends on that summary rather than the extension replaying it, because a
+ * fix can contradict it: a finding may remove a file the summary lists, change a
+ * decision it records, or add a test it does not mention.
+ *
+ * @param summary The summary the reviewed turn ended on; "" when it produced none.
+ */
+const followUpPrompt = (summary: string) =>
 	"Address the quick-review findings above. Fix the HIGH and MED items first, " +
 	"skip anything you judge a false positive and say why in one line, and add or " +
-	"update the tests the findings call for. Do not commit.";
+	"update the tests the findings call for. Do not commit. Keep the fix notes to " +
+	"one line per finding.\n\n" +
+	(summary
+		? "Then close with the task summary below, restated in full and amended " +
+			"wherever a fix changed it — files, decisions, test counts, open questions. " +
+			"It is the last thing the user reads, so it must describe the tree as it " +
+			`stands after the fixes, not before.\n\n---\n${summary}\n---`
+		: "Then close with a short summary of the task as it now stands.");
 
 const PROMPT_PATH = fileURLToPath(
 	new URL("../../prompts/quick-review.md", import.meta.url),
@@ -67,9 +84,11 @@ export default function (pi: ExtensionAPI) {
 	const reviewed = new Set<string>();
 	let count = 0;
 	let disabled = false;
-	let running = false;
+	/** "idle" outside the cycle, then the loop the next agent_end belongs to. */
+	let phase: "idle" | "reviewing" | "fixing" = "idle";
 	let baseline = "";
 	let reviewBody = "";
+	let taskSummary = "";
 
 	/** Fingerprints the tracked uncommitted changes; "" for a clean tree or a non-git directory. */
 	async function diffFingerprint(cwd: string): Promise<string> {
@@ -83,6 +102,23 @@ export default function (pi: ExtensionAPI) {
 			.update(tracked)
 			.update(diff.stdout ?? "")
 			.digest("hex");
+	}
+
+	/**
+	 * Re-renders the summary of the original task, so the review does not leave it
+	 * buried above itself. Not sent to the model.
+	 *
+	 * Only valid when no fix turn ran: after a fix the held text can be out of date,
+	 * and the fix turn restates it instead.
+	 */
+	function restoreSummary() {
+		if (!taskSummary) return;
+		pi.sendMessage({
+			customType: "quick-review-summary",
+			content: `${colour(DIM, "── task summary ──")}\n\n${taskSummary}`,
+			display: true,
+		});
+		taskSummary = "";
 	}
 
 	async function runReview(ctx: ExtensionContext, hash: string) {
@@ -145,16 +181,31 @@ export default function (pi: ExtensionAPI) {
 	async function offerFollowUp(messages: unknown[], ctx: ExtensionContext) {
 		const text = lastAssistantText(messages as never[]);
 		const verdict = parseVerdict(text);
-		if (!verdict || !ctx.hasUI) return;
+		if (!verdict || !ctx.hasUI) return false;
 
-		renderPanel(ctx, verdict, parseFindings(text));
-		if (verdict !== "CONCERNS" && verdict !== "FAIL") return;
+		const findings = parseFindings(text);
+		renderPanel(ctx, verdict, findings);
 
-		const ok = await ctx.ui.confirm(
-			`Quick review: ${verdict}`,
-			"The review found issues. Work on them now?",
-		);
-		if (ok) pi.sendUserMessage(FOLLOW_UP_PROMPT, { deliverAs: "followUp" });
+		const { action, actionable } = fixDecision(findings);
+		if (action === "none") return false;
+		if (action === "ask") {
+			const ok = await ctx.ui.confirm(
+				`Quick review: ${verdict}`,
+				actionable === 0
+					? "Only LOW findings. Work on them now?"
+					: `${actionable} HIGH/MED findings — more than a quick fix. Work on them now?`,
+			);
+			if (!ok) return false;
+		} else {
+			ctx.ui.notify(
+				`Quick review: fixing ${actionable} finding${actionable === 1 ? "" : "s"}`,
+				"info",
+			);
+		}
+
+		pi.sendUserMessage(followUpPrompt(taskSummary), { deliverAs: "followUp" });
+		taskSummary = "";
+		return true;
 	}
 
 	// DEV-NOTE: the panel describes one specific review, so it is dropped as soon as
@@ -170,11 +221,18 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (event, ctx) => {
 		// DEV-NOTE: sendUserMessage starts another agent loop, which ends in this same
-		// handler. `running` drops that echo; the fingerprint set and the budget in
+		// handler. `phase` routes those echoes; the fingerprint set and the budget in
 		// gate.mjs stop a review/fix ping-pong from looping indefinitely.
-		if (running) {
-			running = false;
-			await offerFollowUp(event.messages, ctx);
+		if (phase === "reviewing") {
+			const fixing = await offerFollowUp(event.messages, ctx);
+			phase = fixing ? "fixing" : "idle";
+			if (!fixing) restoreSummary();
+			return;
+		}
+		// DEV-NOTE: nothing is replayed after a fix turn — that turn was handed the summary
+		// and ends on its amended version, which is the only one that still matches the tree.
+		if (phase === "fixing") {
+			phase = "idle";
 			return;
 		}
 
@@ -188,7 +246,11 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (!review) return;
 
-		running = true;
+		// DEV-NOTE: the turn that is ending carries the summary of the real task. The
+		// review and the fix turn push it out of sight, so it is held here and replayed
+		// once the cycle closes — the transcript ends on the task, not on the review.
+		taskSummary = lastAssistantText(event.messages as never[]);
+		phase = "reviewing";
 		await runReview(ctx, hash);
 	});
 

@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+	AUTO_FIX_LIMIT,
+	fixDecision,
 	lastAssistantText,
 	MAX_AUTO_REVIEWS,
 	messageText,
@@ -176,4 +178,36 @@ test("messageText joins text blocks and ignores non-text content", () => {
 		"a\nb",
 	);
 	assert.equal(messageText(undefined), "");
+});
+
+test("fixDecision fixes a small batch of defects without asking", () => {
+	const decision = fixDecision([
+		{ severity: "HIGH" },
+		{ severity: "MED" },
+		{ severity: "LOW" },
+	]);
+	assert.deepEqual(decision, {
+		action: "auto",
+		actionable: 2,
+		reason: "defects",
+	});
+});
+
+test("fixDecision asks when the defect batch exceeds the limit", () => {
+	const findings = Array.from({ length: AUTO_FIX_LIMIT + 1 }, () => ({
+		severity: "MED",
+	}));
+	assert.deepEqual(fixDecision(findings), {
+		action: "ask",
+		actionable: AUTO_FIX_LIMIT + 1,
+		reason: "over-limit",
+	});
+});
+
+test("fixDecision asks for a LOW-only report", () => {
+	assert.equal(fixDecision([{ severity: "LOW" }]).action, "ask");
+});
+
+test("fixDecision stays silent when there is nothing to fix", () => {
+	assert.equal(fixDecision([]).action, "none");
 });
