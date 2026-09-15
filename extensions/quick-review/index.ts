@@ -278,6 +278,16 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// DEV-NOTE: a turn that ends on a verdict is a review however it was started, so a
+		// manual /quick-review gets the same card and the same fix offer as the automatic one.
+		if (parseVerdict(lastAssistantText(event.messages as never[]))) {
+			const reviewedHash = await diffFingerprint(ctx.cwd);
+			if (reviewedHash) reviewed.add(reviewedHash);
+			lastReason = "manual-review";
+			phase = (await offerFollowUp(event.messages, ctx)) ? "fixing" : "idle";
+			return;
+		}
+
 		const hash = await diffFingerprint(ctx.cwd);
 		const { review, ask, reason } = shouldAutoReview({
 			hash,

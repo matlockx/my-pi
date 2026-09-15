@@ -216,3 +216,27 @@ test("fixDecision asks for a LOW-only report", () => {
 test("fixDecision stays silent when there is nothing to fix", () => {
 	assert.equal(fixDecision([]).action, "none");
 });
+
+test("parseFindings reads the markdown report shape", () => {
+	const report = [
+		"**VERDICT: CONCERNS**",
+		"",
+		"## Findings",
+		"",
+		"**HIGH** `internal/a.go:12` — thing broken → fix it",
+		"**LOW** `b.ts:3` — minor → note it",
+		"",
+		"## Commit message",
+	].join("\n");
+
+	assert.equal(parseVerdict(report), "CONCERNS");
+	assert.deepEqual(parseFindings(report), [
+		{
+			severity: "HIGH",
+			location: "internal/a.go:12",
+			finding: "thing broken",
+			fix: "fix it",
+		},
+		{ severity: "LOW", location: "b.ts:3", finding: "minor", fix: "note it" },
+	]);
+});
