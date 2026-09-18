@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
 	AUTO_FIX_LIMIT,
+	commandDirs,
 	fixDecision,
 	lastAssistantText,
 	MAX_AUTO_REVIEWS,
@@ -11,8 +12,67 @@ import {
 	parseVerdict,
 	promptBody,
 	shouldAutoReview,
+	shouldSelfReview,
 	trackedStatus,
+	turnVerdict,
 } from "./gate.mjs";
+
+const assistant = (text) => ({ role: "assistant", content: text });
+
+test("turnVerdict reports a review turn, which ends on its verdict", () => {
+	const result = turnVerdict([
+		{ role: "user", content: "review" },
+		assistant("VERDICT: CONCERNS\n\n## Findings\n\n**MED** `a.go:1` — x → y"),
+	]);
+	assert.equal(result.verdict, "CONCERNS");
+	assert.equal(result.placement, "last");
+});
+
+test("turnVerdict reports a self-review, whose verdict sits above the summary", () => {
+	const result = turnVerdict([
+		assistant("VERDICT: PASS\n\n## Findings\n\nnone"),
+		assistant("Done. Changed lib/history/items.go."),
+	]);
+	assert.equal(result.verdict, "PASS");
+	assert.equal(result.placement, "inline");
+	assert.match(result.text, /VERDICT: PASS/);
+});
+
+test("turnVerdict reports no verdict for an ordinary working turn", () => {
+	assert.deepEqual(turnVerdict([assistant("Done.")]), {
+		verdict: null,
+		placement: "none",
+		text: "",
+	});
+});
+
+test("commandDirs reads cd and git -C targets", () => {
+	assert.deepEqual(
+		commandDirs("cd /Users/me/projects/draw-service && go build ./..."),
+		["/Users/me/projects/draw-service"],
+	);
+	assert.deepEqual(commandDirs("git -C ../order-service fetch origin"), [
+		"../order-service",
+	]);
+	assert.deepEqual(commandDirs("cd '../a b'; cd \"../a b\""), ["../a b"]);
+});
+
+test("commandDirs ignores flags, variables, and commands without a directory", () => {
+	assert.deepEqual(commandDirs("cd -"), []);
+	assert.deepEqual(commandDirs("cd $REPO && ls"), []);
+	assert.deepEqual(commandDirs("rg -n 'cd' README.md"), []);
+});
+
+test("shouldSelfReview appends the directive for an ordinary turn", () => {
+	assert.equal(shouldSelfReview({ disabled: false, phase: "idle" }), true);
+	assert.equal(shouldSelfReview(), true);
+});
+
+test("shouldSelfReview withholds the directive inside the cycle and when off", () => {
+	assert.equal(shouldSelfReview({ phase: "reviewing" }), false);
+	assert.equal(shouldSelfReview({ phase: "fixing" }), false);
+	assert.equal(shouldSelfReview({ disabled: true, phase: "idle" }), false);
+});
 
 test("shouldAutoReview triggers for an unseen dirty tree", () => {
 	const result = shouldAutoReview({

@@ -19,6 +19,51 @@ When unsure, **ask the developer** before making changes.
 | G-11 | Doc comments: state the fact plainly and name the source (`as reported by the provider`) | Anthropomorphise or use chatty phrasing (`when it says`, `we`, `you'll want to`) |
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
+| G-14 | Every open point put to the user is a decidable question: context, options, recommendation, cost of deferring | List bare topics, statuses, or headings under "open questions" |
+
+## Asking the User (MUST)
+
+When something is genuinely needed from the user, it is asked as a question the user can answer
+without opening the code. A heading with a topic name is not a question. A status report labelled
+"open questions" is not a question.
+
+Each item follows this shape:
+
+1. **The question**, one sentence, ending in a question mark, answerable with a choice or a yes/no.
+2. **Context**: what exists today, what is blocked by the answer, and where (file, record, service).
+3. **Options**, whenever more than one path exists — each with its consequence, not just its name.
+4. **Recommendation**, always when one option is defensible, with the one reason it wins.
+5. **Cost of deferring**: what stays broken, unwritten, or unreleasable until the answer arrives.
+
+Rules:
+
+- No option list of one. If there is only one path, it is not a question — state it as a decision
+  taken and move on, or as a blocker with its owner.
+- A point with no decision attached is not an open question. Put it under `## Notes` or a
+  `DEV-TODO:` anchor instead, and do not ask the user to respond to it.
+- Never merge several decisions into one item. One question, one answer.
+- Recommendation is withheld only when the choice is a business or product decision the developer
+  owns and no technical criterion separates the options — say that explicitly rather than staying
+  silent.
+- Order questions by what blocks the most work, not by the order they were discovered.
+
+Example of what not to write:
+
+```text
+4. Partner parameter names (D14) — still convention-based.
+```
+
+Example of the same point asked properly:
+
+```text
+4. Should partner parameter names be validated against a fixed list, or stay convention-based?
+   Today `ingest.go:212` accepts any `pp_*` key and forwards it verbatim; a typo reaches the
+   warehouse as a new column.
+   a) Fixed allowlist in BDR-0001 — typos rejected at ingest, new partners need a record change.
+   b) Keep convention-based — no record churn, typos stay invisible until the warehouse query fails.
+   Recommendation: (a). The warehouse cost of a bad column is higher than the cost of editing a record.
+   Deferring: partner onboarding stays unvalidated; no data is lost, so this does not block release.
+```
 
 ## Environment
 

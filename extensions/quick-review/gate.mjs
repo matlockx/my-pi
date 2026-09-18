@@ -40,6 +40,21 @@ export function fixDecision(findings) {
 }
 
 /**
+ * Decides whether a starting agent loop gets the self-review directive in its system prompt.
+ *
+ * Withheld inside the review/fix cycle, where a turn reviewing itself would nest a review in
+ * a review, and while the user has opted out for the session.
+ *
+ * @param {object} input
+ * @param {boolean} [input.disabled] True when the user opted out for this session.
+ * @param {"idle"|"reviewing"|"fixing"} [input.phase] Loop the next agent_end belongs to.
+ * @returns {boolean} True when the directive is appended.
+ */
+export function shouldSelfReview({ disabled = false, phase = "idle" } = {}) {
+ return !disabled && phase === "idle";
+}
+
+/**
  * Decides whether an agent_end should trigger an automatic quick review.
  *
  * @param {object} input
@@ -81,6 +96,34 @@ export function lastAssistantText(messages) {
   if (messages[i]?.role === "assistant") return messageText(messages[i]);
  }
  return "";
+}
+
+/**
+ * Locates the review verdict in a finished agent loop.
+ *
+ * Placement is what tells a self-review from a review turn: a turn asked to review
+ * ends on its report, so the verdict is in the last assistant message, while a working
+ * turn that reviewed itself ends on the task summary, with the verdict above it. The
+ * first case still needs the fix offer; the second has already fixed what it found.
+ *
+ * @param {Array<{role?: string, content?: unknown}>} messages Messages as delivered by agent_end.
+ * @returns {{verdict: "PASS"|"CONCERNS"|"FAIL"|null, placement: "last"|"inline"|"none", text: string}} `text` is the assistant message carrying the verdict, "" when there is none.
+ */
+export function turnVerdict(messages) {
+ const list = messages ?? [];
+ const lastAssistant = list.findLastIndex(
+  (message) => message?.role === "assistant",
+ );
+
+ for (let i = lastAssistant; i >= 0; i--) {
+  if (list[i]?.role !== "assistant") continue;
+  const text = messageText(list[i]);
+  const verdict = parseVerdict(text);
+  if (verdict)
+   return { verdict, placement: i === lastAssistant ? "last" : "inline", text };
+ }
+
+ return { verdict: null, placement: "none", text: "" };
 }
 
 /**
@@ -171,6 +214,36 @@ function findingsSection(text) {
  const body = text.slice(start.index + start[0].length);
  const end = /^#{1,6}\s+\S/m.exec(body);
  return end ? body.slice(0, end.index) : body;
+}
+
+/**
+ * Reads the working directories a bash command reaches into.
+ *
+ * Recognises `cd <dir>` and `git -C <dir>`, which is how a turn leaves the session's
+ * own directory. Paths are returned verbatim, quotes stripped; a relative one is
+ * resolved by the caller against the session directory.
+ *
+ * ponytail: no shell parsing, a regex over the command text. A `cd` built from a
+ * variable or a second `cd` relative to the first is missed; move to a real parser
+ * only if that shows up in practice.
+ *
+ * @param {string} command The bash command line.
+ * @returns {string[]} Directory arguments in command order, deduplicated.
+ */
+export function commandDirs(command) {
+ const patterns = [
+  /\bcd\s+("[^"]+"|'[^']+'|[^\s;&|)]+)/g,
+  /\bgit\s+-C\s+("[^"]+"|'[^']+'|[^\s;&|)]+)/g,
+ ];
+ const dirs = new Set();
+ for (const pattern of patterns) {
+  for (const match of (command ?? "").matchAll(pattern)) {
+   const dir = match[1].replace(/^["']|["']$/g, "");
+   if (dir && !dir.startsWith("-") && dir !== "$" && !dir.includes("$"))
+    dirs.add(dir);
+  }
+ }
+ return [...dirs];
 }
 
 /**
