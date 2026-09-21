@@ -11,7 +11,30 @@ Pick the scope first:
 2. If the tree is clean, review the commits ahead of the upstream main: `git fetch origin` (skip on failure and say so), then `git log --oneline origin/main..HEAD` and `git diff origin/main...HEAD`. State the scope in one line before the verdict, e.g. `Scope: 3 commits ahead of origin/main`.
 3. Nothing in either — reply `VERDICT: PASS` with `none` under `## Findings` and omit the commit message section.
 
-Changed lines and their immediate context only.
+Changed lines and their immediate context only, with the two exceptions below, which are not optional.
+
+**A changed gate is reviewed against its whole sink, not its changed line.** When the diff adds or
+moves a consent check, sanitiser, redaction, allowlist, scope filter, or purge, the changed line is
+not the unit of review. Read the entire enclosing builder or handler and list *every* field it
+emits, then grep the repository for the other writers and readers of the same sink. A URL
+sanitised beside an untouched referrer, an event whose name or attributes still carry what its
+payload no longer does, an exported builder taking the value as a caller-supplied override, a
+purge that races the flush it is meant to precede — all of these live on unchanged lines. Name the
+sibling explicitly in the finding or state that the sink was enumerated and is clean.
+
+**A fix round is reviewed as a class, not as the instance that was reported.** When the diff
+answers earlier review feedback, the question is never whether that line is now correct. It is
+which other value of the same shape, which other field of the same record, which other caller of
+the same function still has the original defect. A value filter that rejects one PII shape
+(e-mail) and passes the rest (phone, name, address, token) is the same finding, unfixed.
+
+**Large diffs are reviewed per file, never in one blob.** Run `git diff --stat` first. Above roughly
+1 500 changed lines or 40 files, a single `git diff` is truncated by the output limit and the
+unseen files look identical to clean ones. In that case rank the changed files by risk — anything
+under a services/lib/handler/storage path, anything touching consent, money, auth, persistence, or
+a wire payload first — and diff them individually with `git diff -- <path>`. State coverage in the
+scope line, e.g. `Scope: 119 files, 3 249 lines; reviewed 18 highest-risk files`. Never report a
+verdict over a diff that was cut off without saying so.
 
 Check, in this order: **security** (secrets, unvalidated input at a trust boundary, injection, missing authn/authz, PII in logs) · **correctness** (swallowed errors, nil deref, unchecked assertion, missing `defer Close/Rollback`, context not propagated, unsynchronised shared state) · **design and scope** (changes beyond the request, logic already in the repo, one-implementation abstraction, contradicted `docs/bdr/` rule) · **tests** (new behaviour tested, `TestBDR###R#` for record rules, assertions not weakened).
 
@@ -29,14 +52,36 @@ parameter lands in browser history and proxy logs. Printing a failed command's s
 the credential it was fetching. Ask where the value is sanitised, and whether a token, e-mail
 address, or account identifier can travel in it.
 
+Passing validation for one sink does not make a value fit for a new one. When the diff copies an
+existing field into an audit trail, history projection, ledger item, operator page, or analytics
+export, the rule that governs is the new sink's, and those sinks routinely forbid what the
+original endpoint accepts. Syntactic validation — a well-formed URL, no userinfo, a length cap —
+is not redaction, and a client-side allowlist is not a trust boundary.
+
 **Validation, ordering, and limits that do not bind.** A JSON string validated as syntactically
 valid JSON but not as an object. A size budget enforced after the value has already been parsed or
 rebuilt. A slice or map allocated at the caller-supplied length when only a fixed maximum can
 survive. A counter that stops at a cap while the surrounding work continues unbounded. A limit
 applied before the filter it is meant to count against, so empty or invalid entries consume the
-budget. A trim, split, or prefix heuristic that mutates the data it inspects — whitespace stripped
+budget. A list flattened into one string with a separator that is legal inside its own values, so
+`a,B=b` cannot be told from two entries; the same applies to `key=value` log lines, CSV columns,
+and composite storage keys. A trim, split, or prefix heuristic that mutates the data it inspects — whitespace stripped
 from a path, a sentence terminator missed because a quote follows it, a whole clause discarded to
 remove its opening words.
+
+**Consent, opt-out, and client-side storage.** A gate placed on one sink while a sibling sink on
+the same page still ships the data (a marketing block suppressed while the page URL, the referrer,
+the event name, or an attributes map still carries it). An exported builder that accepts the gated
+value as a caller-supplied override, so the gate holds only for the one call site that happens to
+respect it. Withdrawal that stops future writes but leaves already-queued, parked, or retried
+payloads to be flushed later, or whose purge races a flush that cleared storage before its await
+and requeues the batch afterwards. A re-grant on the same page bootstrapping a container that is
+already loaded. A retention window enforced by refusing to *read* expired
+data while the record stays in storage forever, or a cookie whose expiry is slid forward on every
+write so the stated maximum lifetime never arrives. A third-party script gated at injection time
+while the global queue it drains (`dataLayer` and friends) is still written pre-consent. Un-mount
+treated as teardown for a tag that cannot be unloaded. A stored decision accepted as consent when
+its version or timestamp is missing or stale — absence must fail closed.
 
 **Header and identity trust.** An operator, tenant, or path taken from a request header and used
 for scoping, link generation, or authorisation. Absence treated as a wider scope rather than a
@@ -116,8 +161,10 @@ disagree about what went wrong.
 
 **Repo tooling.** A check or fix script that lost its `cd` to the repository root or a required
 environment variable. A check script that writes (`-w`) instead of reporting a difference. A
-pattern whose width or shape no longer matches what the neighbouring script generates. Migration
-files that break the repository's own documented SQL parser constraints.
+pipeline whose exit status comes from the last stage, so a failing fetch upstream of `base64`,
+`jq`, or `tee` is masked and a truncated file is moved into place. A pattern whose width or shape
+no longer matches what the neighbouring script generates. Migration files that break the
+repository's own documented SQL parser constraints.
 
 Reply with exactly this shape, as markdown, nothing else. Only the commit message is fenced;
 the rest is plain markdown so the terminal renders it:
@@ -138,6 +185,6 @@ the rest is plain markdown so the terminal renders it:
 
 Omit the `## Commit message` section when the scope is already-committed work; there is nothing to commit.
 
-Rules: severity first on the line, bold, no list marker and no indent; `<file>:<line>` unspaced and in backticks; at most six findings, highest severity first; silent areas stay silent, `none` under `## Findings` when there is nothing. No summary section, no prose outside the format. `FAIL` means a HIGH finding, `CONCERNS` means fix something before committing, `PASS` means commit is fine. British English (G-7).
+Rules: severity first on the line, bold, no list marker and no indent; `<file>:<line>` unspaced and in backticks; at most six findings, or ten when the scope line reports more than 40 changed files, highest severity first; silent areas stay silent, `none` under `## Findings` when there is nothing. No summary section, no prose outside the format. `FAIL` means a HIGH finding, `CONCERNS` means fix something before committing, `PASS` means commit is fine. British English (G-7).
 
 Report only. Do not fix, do not commit.
