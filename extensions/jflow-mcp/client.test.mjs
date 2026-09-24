@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
 
-import { McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
+import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
 
 // Fake MCP server: answers initialize, tools/list and tools/call; exits on "crash".
 const FAKE_SERVER = `
@@ -170,4 +170,15 @@ test("http: real jflow mcp --http exposes its tools", { skip: !hasJflow && "jflo
 	} finally {
 		child.kill();
 	}
+});
+
+test("abortable: abort rejects a never-settling call; no signal or settled call passes through", async () => {
+	const ac = new AbortController();
+	const hung = abortable(new Promise(() => {}), ac.signal);
+	ac.abort();
+	await assert.rejects(hung, /aborted/);
+	await assert.rejects(abortable(Promise.resolve(1), AbortSignal.abort()), /aborted/);
+	assert.equal(await abortable(Promise.resolve(2), new AbortController().signal), 2);
+	assert.equal(await abortable(Promise.resolve(3)), 3);
+	await assert.rejects(abortable(Promise.reject(new Error("boom")), new AbortController().signal), /boom/);
 });

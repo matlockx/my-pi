@@ -31,7 +31,7 @@
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
+import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
 import { inputApprovesJflow, statusText } from "./intent.mjs";
 
 const COMMAND = "jflow";
@@ -107,7 +107,7 @@ export default function (pi: ExtensionAPI) {
 				label: `jflow ${tool.name}`,
 				description: tool.description ?? tool.name,
 				parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema ?? { type: "object" }),
-				async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 					const args = { ...params };
 					// Models sometimes pass relative or @-prefixed paths; jflow wants absolute.
 					if (typeof args.path === "string") args.path = resolve(ctx.cwd, args.path.replace(/^@/, ""));
@@ -121,7 +121,8 @@ export default function (pi: ExtensionAPI) {
 						if (!ok) throw new Error(`jflow ${tool.name} blocked by user`);
 					}
 
-					// ponytail: no MCP cancellation on abort — a half-cancelled push/PR is worse than waiting.
+					// Abort stops waiting but sends no MCP cancellation: a half-cancelled push/PR is worse
+					// than letting jflow finish. Without this, a stuck git hook hangs the session unabortably.
 					let c: Client;
 					try {
 						c = await connect(ctx.cwd);
@@ -130,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 						throw err;
 					}
 					showStatus(ctx, true);
-					const result = await c.callTool(tool.name, args);
+					const result = await abortable(c.callTool(tool.name, args), signal);
 					const text = resultText(result);
 					if (result?.isError) throw new Error(text || `jflow ${tool.name} failed`);
 					return { content: [{ type: "text", text }], details: {} };

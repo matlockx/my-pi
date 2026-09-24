@@ -32,6 +32,21 @@ class McpClient {
 	}
 }
 
+/**
+ * Rejects when `signal` aborts, without cancelling `p`: the caller stops waiting,
+ * the server-side work (commit, push, PR) still runs to completion.
+ */
+export function abortable(p, signal) {
+	if (!signal) return p;
+	return new Promise((resolve, reject) => {
+		const onAbort = () =>
+			reject(new Error("aborted — stopped waiting; jflow may still finish server-side, check git/Jira state"));
+		if (signal.aborted) return onAbort();
+		signal.addEventListener("abort", onAbort, { once: true });
+		p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+	});
+}
+
 function rpcResult(msg) {
 	if (msg.error) throw new Error(`${msg.error.message ?? "MCP error"} (${msg.error.code})`);
 	return msg.result;
@@ -113,7 +128,11 @@ export class McpStdioClient extends McpClient {
 export class McpHttpClient extends McpClient {
 	constructor(url) {
 		super();
-		this.url = new URL(url);
+		try {
+			this.url = new URL(url);
+		} catch {
+			throw new Error(`invalid JFLOW_MCP_URL: ${url}`);
+		}
 		this.sessionId = undefined;
 	}
 
