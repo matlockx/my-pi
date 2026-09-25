@@ -43,7 +43,8 @@ const URL_ENV = "JFLOW_MCP_URL";
 const PREFIX = "jflow_";
 const START_TIMEOUT_MS = 10_000;
 // Unknown (new) tools fail closed and need confirmation.
-const READ_ONLY = new Set(["list_epics"]);
+// peer_review only reads the PR; peer_review_submit posts to GitHub and stays gated.
+const READ_ONLY = new Set(["list_epics", "peer_review"]);
 
 const execFileP = promisify(execFile);
 
