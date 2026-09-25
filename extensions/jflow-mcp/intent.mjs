@@ -7,6 +7,14 @@ export function inputApprovesJflow(event) {
 	return event?.source !== "extension" && /\bjflow\b/i.test(event?.text ?? "");
 }
 
+// Repos under this GitHub org get auto-approve by default (https or ssh remote).
+const AUTO_ORG = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])BauerMediaGroup-Stardust\//i;
+
+/** True when a git remote URL points at github.com/BauerMediaGroup-Stardust/*. */
+export function isAutoRemote(url) {
+	return AUTO_ORG.test(url?.trim() ?? "");
+}
+
 /**
  * Footer status: transport, whether the server answered, and auto-approve.
  * undefined (no status) when stdio jflow is simply not installed.

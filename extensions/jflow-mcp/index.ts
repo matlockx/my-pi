@@ -19,8 +19,10 @@
  * create Jira tasks, commit, push and open PRs. Without a UI they are blocked.
  * A prompt you type that says "jflow" (e.g. "create pr with jflow") is the
  * confirmation: jflow tools run without a dialog until your next prompt.
- * `/jflow-auto on` skips the dialog for the rest of the session (never
- * persisted; a new session starts with it off).
+ * Auto-approve is on by default for repos whose `origin` is under
+ * github.com/BauerMediaGroup-Stardust/ (checked per call against the tool's
+ * `path`, else the session cwd) and off elsewhere. `/jflow-auto on|off`
+ * overrides that for the rest of the session (never persisted).
  *
  * Footer status: `jflow: stdio ✓`, `jflow: http auto ✓`, `jflow: http down`.
  * In HTTP mode this is UX, not a security boundary: the server has no auth,
@@ -28,11 +30,13 @@
  * can call it directly.
  */
 
+import { execFile } from "node:child_process";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
-import { inputApprovesJflow, statusText } from "./intent.mjs";
+import { inputApprovesJflow, isAutoRemote, statusText } from "./intent.mjs";
 
 const COMMAND = "jflow";
 const URL_ENV = "JFLOW_MCP_URL";
@@ -40,6 +44,18 @@ const PREFIX = "jflow_";
 const START_TIMEOUT_MS = 10_000;
 // Unknown (new) tools fail closed and need confirmation.
 const READ_ONLY = new Set(["list_epics"]);
+
+const execFileP = promisify(execFile);
+
+/** Auto-approve default: true when the repo at dir has a Stardust `origin`. Any git failure is false. */
+async function isAutoRepo(dir: string): Promise<boolean> {
+	try {
+		const { stdout } = await execFileP("git", ["-C", dir, "remote", "get-url", "origin"], { timeout: 5_000 });
+		return isAutoRemote(stdout);
+	} catch {
+		return false;
+	}
+}
 
 type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
 
@@ -58,12 +74,14 @@ export default function (pi: ExtensionAPI) {
 	const mode = url ? "http" : "stdio";
 	// up: undefined = not installed/unknown, false = unreachable, true = answered.
 	let up: boolean | undefined;
-	let auto = false;
+	// auto: explicit /jflow-auto override; undefined = per-repo default (isAutoRepo).
+	let auto: boolean | undefined;
+	let cwdAuto = false;
 
 	type UiCtx = { hasUI: boolean; ui: { setStatus: (id: string, text: string | undefined) => void } };
 	function showStatus(ctx: UiCtx, nowUp: boolean | undefined = up) {
 		up = nowUp;
-		if (ctx.hasUI) ctx.ui.setStatus("jflow-mcp", statusText({ mode, up, auto }));
+		if (ctx.hasUI) ctx.ui.setStatus("jflow-mcp", statusText({ mode, up, auto: auto ?? cwdAuto }));
 	}
 
 	// Memoised so parallel tool calls after a crash/restart share one new connection.
@@ -86,6 +104,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		cwdAuto = await isAutoRepo(ctx.cwd);
 		let tools: McpTool[];
 		try {
 			tools = await withTimeout((await connect(ctx.cwd)).listTools(), START_TIMEOUT_MS);
@@ -112,7 +131,8 @@ export default function (pi: ExtensionAPI) {
 					// Models sometimes pass relative or @-prefixed paths; jflow wants absolute.
 					if (typeof args.path === "string") args.path = resolve(ctx.cwd, args.path.replace(/^@/, ""));
 
-					if (!READ_ONLY.has(tool.name) && !approvedByPrompt && !auto) {
+					const repo = typeof args.path === "string" ? args.path : ctx.cwd;
+					if (!READ_ONLY.has(tool.name) && !approvedByPrompt && !(auto ?? (await isAutoRepo(repo)))) {
 						if (!ctx.hasUI) throw new Error(`jflow ${tool.name} blocked — no UI available for confirmation`);
 						const ok = await ctx.ui.confirm(
 							`🔒 jflow ${tool.name}`,
@@ -152,15 +172,17 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
 			if (arg === "on" || arg === "off") auto = arg === "on";
-			else if (arg !== "status") auto = !auto;
+			else if (arg !== "status") auto = !(auto ?? cwdAuto);
 			showStatus(ctx);
-			if (ctx.hasUI) ctx.ui.notify(`jflow auto-approve ${auto ? "on — tools push and edit Jira without asking" : "off"}`, "info");
+			const on = auto ?? cwdAuto;
+			const why = auto === undefined ? " (default for this repo)" : "";
+			if (ctx.hasUI) ctx.ui.notify(`jflow auto-approve ${on ? "on — tools push and edit Jira without asking" : "off"}${why}`, "info");
 		},
 	});
 
 	pi.on("session_shutdown", async () => {
 		client?.close();
 		client = undefined;
-		auto = false; // auto-approve never carries into another session
+		auto = undefined; // an override never carries into another session
 	});
 }
