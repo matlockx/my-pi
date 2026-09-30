@@ -1,6 +1,7 @@
 /**
  * lean-footer — high-contrast, color-coded replacement for pi's built-in
  * footer stats line. Replaces the uniformly-dim line via ctx.ui.setFooter().
+ * Under omp, renders the token/cache/cost segments as a below-editor widget.
  *
  * Color families (truecolor ANSI, tuned for dark terminals):
  *   IN side  (blue/cyan family) — tokens that feed the model:
@@ -81,13 +82,79 @@ const COL = {
 const fmt = (n: number): string =>
 	n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`;
 
+// DEV-NOTE: omp (Bun host) keeps ctx.ui.setFooter() as a no-op and draws its own
+// status line, which already shows path, git, model and context fill. Under omp
+// the token/cache/cost breakdown renders as a one-line widget below the editor;
+// ctx.ui.setStatus() would strip the ANSI colors.
+const IS_OMP = "Bun" in globalThis;
+const WIDGET_KEY = "lean-footer";
+
+type Ctx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
+
+/** Session-total token/cost segments as [plain, colored] pairs. */
+function usageParts(ctx: Ctx): Array<[string, string]> {
+	let input = 0,
+		output = 0,
+		cacheRead = 0,
+		cacheWrite = 0,
+		cost = 0;
+	let ch: number | undefined;
+	for (const e of ctx.sessionManager.getEntries()) {
+		if (e.type === "message" && e.message.role === "assistant") {
+			const u = (e.message as AssistantMessage).usage;
+			input += u.input;
+			output += u.output;
+			cacheRead += u.cacheRead;
+			cacheWrite += u.cacheWrite;
+			cost += u.cost.total;
+			const prompt = u.input + u.cacheRead + u.cacheWrite;
+			ch = prompt > 0 ? (u.cacheRead / prompt) * 100 : undefined;
+		}
+	}
+
+	const parts: Array<[string, string]> = [];
+	if (input)
+		parts.push([`↑${fmt(input)}`, c(COL.inFresh, `↑${fmt(input)}`, true)]);
+	if (output)
+		parts.push([`↓${fmt(output)}`, c(COL.out, `↓${fmt(output)}`, true)]);
+	if (cacheRead)
+		parts.push([`R${fmt(cacheRead)}`, c(COL.cacheR, `R${fmt(cacheRead)}`)]);
+	if (cacheWrite)
+		parts.push([`W${fmt(cacheWrite)}`, c(COL.cacheW, `W${fmt(cacheWrite)}`)]);
+	if ((cacheRead > 0 || cacheWrite > 0) && ch !== undefined) {
+		parts.push([`CH${ch.toFixed(1)}%`, c(COL.ch, `CH${ch.toFixed(1)}%`)]);
+	}
+
+	const usingSub = ctx.model
+		? ctx.modelRegistry?.isUsingOAuth?.(ctx.model)
+		: false;
+	if (cost || usingSub) {
+		const s = `$${cost.toFixed(3)}${usingSub ? " (sub)" : ""}`;
+		parts.push([s, c(COL.cost, s, true)]);
+	}
+	return parts;
+}
+
 export default function leanFooter(pi: ExtensionAPI) {
 	let enabled = loadDefault();
+
+	function publishStatus(ctx: Ctx) {
+		const parts = enabled ? usageParts(ctx) : [];
+		ctx.ui.setWidget(
+			WIDGET_KEY,
+			parts.length > 0 ? [parts.map((p) => p[1]).join(" ")] : undefined,
+			{ placement: "belowEditor" },
+		);
+	}
 
 	// DEV-NOTE: rebuilds the footer with per-field color families. Layout/
 	// padding computed on PLAIN strings, colors applied after, so ANSI never
 	// corrupts width math or gets cut mid-escape.
-	function install(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) {
+	function install(ctx: Ctx) {
+		if (IS_OMP) {
+			publishStatus(ctx);
+			return;
+		}
 		if (!enabled) {
 			ctx.ui.setFooter(undefined);
 			return;
@@ -98,61 +165,7 @@ export default function leanFooter(pi: ExtensionAPI) {
 				dispose: unsub,
 				invalidate() {},
 				render(width: number): string[] {
-					let input = 0,
-						output = 0,
-						cacheRead = 0,
-						cacheWrite = 0,
-						cost = 0;
-					let ch: number | undefined;
-					for (const e of ctx.sessionManager.getEntries()) {
-						if (e.type === "message" && e.message.role === "assistant") {
-							const u = (e.message as AssistantMessage).usage;
-							input += u.input;
-							output += u.output;
-							cacheRead += u.cacheRead;
-							cacheWrite += u.cacheWrite;
-							cost += u.cost.total;
-							const prompt = u.input + u.cacheRead + u.cacheWrite;
-							ch = prompt > 0 ? (u.cacheRead / prompt) * 100 : undefined;
-						}
-					}
-
-					// stats parts: [plain, colored]
-					const parts: Array<[string, string]> = [];
-					if (input)
-						parts.push([
-							`↑${fmt(input)}`,
-							c(COL.inFresh, `↑${fmt(input)}`, true),
-						]);
-					if (output)
-						parts.push([
-							`↓${fmt(output)}`,
-							c(COL.out, `↓${fmt(output)}`, true),
-						]);
-					if (cacheRead)
-						parts.push([
-							`R${fmt(cacheRead)}`,
-							c(COL.cacheR, `R${fmt(cacheRead)}`),
-						]);
-					if (cacheWrite)
-						parts.push([
-							`W${fmt(cacheWrite)}`,
-							c(COL.cacheW, `W${fmt(cacheWrite)}`),
-						]);
-					if ((cacheRead > 0 || cacheWrite > 0) && ch !== undefined) {
-						parts.push([
-							`CH${ch.toFixed(1)}%`,
-							c(COL.ch, `CH${ch.toFixed(1)}%`),
-						]);
-					}
-
-					const usingSub = ctx.model
-						? ctx.modelRegistry?.isUsingOAuth?.(ctx.model)
-						: false;
-					if (cost || usingSub) {
-						const s = `$${cost.toFixed(3)}${usingSub ? " (sub)" : ""}`;
-						parts.push([s, c(COL.cost, s, true)]);
-					}
+					const parts = usageParts(ctx);
 
 					// context fill
 					const cu = ctx.getContextUsage?.();
@@ -225,6 +238,16 @@ export default function leanFooter(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		install(ctx);
 	});
+
+	// omp: the status segment is static text, so refresh it whenever usage changes.
+	// message_end fires before the assistant entry is persisted; turn_end/agent_end
+	// run after it lands in sessionManager.getEntries().
+	if (IS_OMP) {
+		pi.on("turn_end", async (_event, ctx) => publishStatus(ctx));
+		pi.on("agent_end", async (_event, ctx) => publishStatus(ctx));
+		pi.on("session_compact", async (_event, ctx) => publishStatus(ctx));
+		pi.on("model_select", async (_event, ctx) => publishStatus(ctx));
+	}
 
 	pi.registerCommand("footer-colors", {
 		description: "Toggle high-contrast colored footer (or: default on|off)",

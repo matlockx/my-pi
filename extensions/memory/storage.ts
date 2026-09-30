@@ -1,6 +1,29 @@
 import { mkdirSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
+/** Subset of the better-sqlite3 / bun:sqlite API shared by both drivers. */
+interface SqliteDatabase {
+	exec(sql: string): void;
+	prepare(sql: string): {
+		run(...params: unknown[]): { changes: number };
+		all(...params: unknown[]): unknown[];
+	};
+	close(): void;
+}
+
+// DEV-NOTE: omp runs extensions inside its compiled Bun binary, which cannot load
+// the better-sqlite3 native addon; pi runs on Node, which has no bun:sqlite.
+// Both drivers open the same memories.db, so pi and omp share one memory store.
+function openDatabase(path: string): SqliteDatabase {
+	const require = createRequire(import.meta.url);
+	if ("Bun" in globalThis) {
+		const { Database } = require("bun:sqlite");
+		return new Database(path);
+	}
+	const Database = require("better-sqlite3");
+	return new Database(path);
+}
 
 export interface Memory {
 	id: string;
@@ -54,14 +77,14 @@ END;
 `;
 
 export class MemoryStorage {
-	private db: Database.Database;
+	private db: SqliteDatabase;
 
 	constructor() {
 		if (!existsSync(MEMORY_DIR)) {
 			mkdirSync(MEMORY_DIR, { recursive: true });
 		}
-		this.db = new Database(DB_PATH);
-		this.db.pragma("journal_mode = WAL");
+		this.db = openDatabase(DB_PATH);
+		this.db.exec("PRAGMA journal_mode = WAL");
 		this.db.exec(SCHEMA);
 	}
 
