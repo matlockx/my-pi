@@ -4,7 +4,8 @@
  * Redaction is a net; this is a wall. Redaction still runs for anything that
  * slips past (e.g. `docker compose config` printing env values).
  *
- * DEV-NOTE: add new filenames to SECRET_FILES / allow-list to ALLOWED.
+ * DEV-NOTE: add new filenames to SECRET_FILES, full-path suffixes to
+ * SECRET_PATHS, allow-list to ALLOWED.
  */
 
 const SECRET_FILES = [
@@ -15,11 +16,18 @@ const SECRET_FILES = [
 	/^(credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)$/,
 ];
 
+// Paths whose basename is too generic to block alone (config.yaml), matched on
+// the whole path instead. jflow's config holds Teams webhook URLs (sig=...).
+// The directory itself is matched too, so `rg sig ~/.config/jflow` and globs
+// (`~/.config/jflow/*.yaml` tokenises to `~/.config/jflow/`) are blocked.
+const SECRET_PATHS = [/(?:^|\/)\.config\/jflow(?:\/(?:config\.ya?ml)?)?$/];
+
 // Templates/examples carry no real values.
 const ALLOWED = /\.(example|sample|template|dist|tpl)$|^\.env\.example$/;
 
-/** True when a path's basename looks like a secret-bearing file. */
+/** True when a path's basename or whole path looks like a secret-bearing file. */
 export function isSecretFile(path: string): boolean {
+	if (SECRET_PATHS.some((re) => re.test(path))) return true;
 	const base = path.split("/").pop() ?? "";
 	if (!base || ALLOWED.test(base)) return false;
 	return SECRET_FILES.some((re) => re.test(base));
@@ -43,8 +51,10 @@ export function checkToolCall(
 	toolName: string,
 	input: Record<string, unknown>,
 ): string | undefined {
-	if (toolName === "bash") {
-		const hits = secretPathsInCommand(String(input.command ?? ""));
+	// eval code is scanned like a shell command: open("~/.config/...") reads too.
+	if (toolName === "bash" || toolName === "eval") {
+		const text = String(input.command ?? input.code ?? "");
+		const hits = secretPathsInCommand(text);
 		return hits.length ? REASON(hits[0]) : undefined;
 	}
 	// Any other tool: block when a path-ish argument names a secret file.

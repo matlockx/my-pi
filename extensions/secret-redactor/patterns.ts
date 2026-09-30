@@ -52,6 +52,24 @@ export const RULES: Rule[] = [
 		regex:
 			/https:\/\/hooks\.slack\.com\/services\/T[0-9A-Za-z]+\/B[0-9A-Za-z]+\/[0-9A-Za-z]+/g,
 	},
+	// Signed URLs: the signature query value is the credential. Covers Power
+	// Automate / Teams Workflows webhooks and Azure SAS (`sig`), Azure Functions
+	// keys (`code`), AWS and GCS presigned URLs. The separator may be JSON-escaped
+	// (`\u0026`, Go's json.Marshal) or HTML-escaped (`&amp;`), and `=` may be
+	// URL-encoded (`%3D`). The value class includes base64 `+/=` so a decoded
+	// signature is redacted whole. Only the value is redacted, so host and path
+	// stay readable.
+	{
+		name: "url-signature",
+		regex:
+			/(?:[?&]|\\u0026|&amp;)(?:sig|code|x-amz-signature|x-amz-security-token|x-goog-signature)(?:=|%3D)([0-9A-Za-z%_+/=\-]{20,})/gi,
+		secretGroup: 1,
+	},
+	// Legacy Teams incoming-webhook connectors carry the credential in the path.
+	{
+		name: "office-webhook",
+		regex: /https:\/\/[^/\s"']+\.webhook\.office\.com\/webhookb2\/[^\s"'<>]+/g,
+	},
 	{
 		name: "stripe-key",
 		regex: /\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{24,}\b/g,

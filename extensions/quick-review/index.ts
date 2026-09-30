@@ -218,6 +218,28 @@ export default function (pi: ExtensionAPI) {
 		taskSummary = "";
 	}
 
+	/**
+	 * Sends a user message: starts a turn when the agent is idle, otherwise queues it
+	 * as a follow-up of the running loop.
+	 */
+	function sendPrompt(ctx: ExtensionContext, text: string) {
+		pi.sendUserMessage(
+			text,
+			ctx.isIdle() ? undefined : { deliverAs: "followUp" },
+		);
+	}
+
+	/** Runs work without awaiting it; a rejection is reported as an error notification. */
+	function detach(ctx: ExtensionContext, work: Promise<unknown>) {
+		work.catch((error: unknown) => {
+			if (ctx.hasUI)
+				ctx.ui.notify(
+					`quick-review: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+		});
+	}
+
 	async function runReview(ctx: ExtensionContext, hash: string) {
 		reviewBody = promptBody(await readFile(PROMPT_PATH, "utf8"));
 		reviewed.add(hash);
@@ -225,8 +247,9 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI)
 			ctx.ui.notify("Auto quick-review of uncommitted changes", "info");
 		// DEV-NOTE: agent_end fires while the runner still counts as processing, so an
-		// unqueued sendUserMessage is rejected with "Agent is already processing".
-		pi.sendUserMessage(REVIEW_MARKER, { deliverAs: "followUp" });
+		// unqueued sendUserMessage is rejected with "Agent is already processing". After a
+		// detached dialog the loop has ended instead, and the message has to start a turn.
+		sendPrompt(ctx, REVIEW_MARKER);
 	}
 
 	// DEV-NOTE: sendUserMessage renders whatever it sends, so the 20-line checklist would
@@ -324,7 +347,8 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 
-		pi.sendUserMessage(followUpPrompt(taskSummary), { deliverAs: "followUp" });
+		phase = "fixing";
+		sendPrompt(ctx, followUpPrompt(taskSummary));
 		taskSummary = "";
 		return true;
 	}
@@ -345,14 +369,21 @@ export default function (pi: ExtensionAPI) {
 		status(ctx);
 	});
 
+	// DEV-NOTE: omp times an agent_end handler out after 30 s and, unlike tool_call, does
+	// not pause that clock while a dialog is open. Every confirm below is therefore
+	// detached: the handler returns at once, and the answer starts its own turn.
 	pi.on("agent_end", async (event, ctx) => {
 		// DEV-NOTE: sendUserMessage starts another agent loop, which ends in this same
 		// handler. `phase` routes those echoes; the fingerprint set and the budget in
 		// gate.mjs stop a review/fix ping-pong from looping indefinitely.
 		if (phase === "reviewing") {
-			const fixing = await offerFollowUp(event.messages, ctx);
-			phase = fixing ? "fixing" : "idle";
-			if (!fixing) restoreSummary();
+			phase = "idle";
+			detach(
+				ctx,
+				offerFollowUp(event.messages, ctx).then((fixing) => {
+					if (!fixing) restoreSummary();
+				}),
+			);
 			return;
 		}
 		// DEV-NOTE: nothing is replayed after a fix turn — that turn was handed the summary
@@ -381,7 +412,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			lastReason = "manual-review";
-			phase = (await offerFollowUp(event.messages, ctx)) ? "fixing" : "idle";
+			phase = "idle";
+			detach(ctx, offerFollowUp(event.messages, ctx));
 			return;
 		}
 
@@ -396,21 +428,26 @@ export default function (pi: ExtensionAPI) {
 		lastReason = reason;
 		if (!review) return;
 
-		if (ask) {
-			if (!ctx.hasUI) return;
-			const ok = await ctx.ui.confirm(
-				"Quick review",
-				`${count} auto-reviews already ran for this request. Review the changes again?`,
-			);
-			if (!ok) return;
-		}
-
 		// DEV-NOTE: the turn that is ending carries the summary of the real task. The
 		// review and the fix turn push it out of sight, so it is held here and replayed
 		// once the cycle closes — the transcript ends on the task, not on the review.
-		taskSummary = lastAssistantText(event.messages as never[]);
-		phase = "reviewing";
-		await runReview(ctx, hash);
+		const summary = lastAssistantText(event.messages as never[]);
+		const start = async () => {
+			taskSummary = summary;
+			phase = "reviewing";
+			await runReview(ctx, hash);
+		};
+		if (!ask) return start();
+		if (!ctx.hasUI) return;
+		detach(
+			ctx,
+			ctx.ui
+				.confirm(
+					"Quick review",
+					`${count} auto-reviews already ran for this request. Review the changes again?`,
+				)
+				.then((ok) => (ok ? start() : undefined)),
+		);
 	});
 
 	// DEV-NOTE: the directive is the fast path and the agent_end gate is the enforcement:

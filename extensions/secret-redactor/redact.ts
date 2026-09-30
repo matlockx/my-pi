@@ -200,6 +200,51 @@ if (process.argv[1]?.endsWith("redact.ts")) {
 	// clean text untouched
 	assert(redactString("just a normal sentence").count === 0, "clean");
 
+	// signed URL (Teams Workflows webhook / Azure SAS): only the sig value goes
+	const sigValue = "Ab3-_x".repeat(8);
+	const sig = redactString(
+		`https://x.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/abc/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers&sv=1.0&sig=${sigValue} next`,
+	);
+	assert(
+		sig.count === 1 &&
+			!sig.text.includes(sigValue) &&
+			sig.text.includes("&sv=1.0&sig=[REDACTED:url-signature] next"),
+		"url sig param",
+	);
+	assert(
+		redactString(`?signature=${sigValue}`).count === 0,
+		"sig rule does not match longer param names",
+	);
+
+	// escaped separators / encoded `=` / decoded base64 value: redacted whole
+	const b64 = "Ab3+/x".repeat(8) + "==";
+	for (const [input, label] of [
+		[`"url":"https://h/p?a=1\\u0026sig=${sigValue}"`, "json-escaped &"],
+		[`<a href="https://h/p?a=1&amp;sig=${sigValue}">`, "html-escaped &"],
+		[`https%3A%2F%2Fh%2Fp?a=1&sig%3D${sigValue}`, "encoded ="],
+		[`https://h/p?sv=1&sig=${b64}&se=2`, "decoded base64"],
+		[`https://b.s3.amazonaws.com/k?X-Amz-Signature=${sigValue}`, "aws presigned"],
+	] as const) {
+		const r = redactString(input);
+		assert(
+			r.count === 1 &&
+				!r.text.includes(sigValue) &&
+				!r.text.includes("Ab3+/x"),
+			`url sig param: ${label}`,
+		);
+	}
+	assert(
+		redactString(`https://h/p?sv=1&sig=${b64}&se=2`).text.endsWith("&se=2"),
+		"sig value stops at &",
+	);
+	const office = redactString(
+		"post to https://acme.webhook.office.com/webhookb2/1234-abcd@5678/IncomingWebhook/deadbeef/9abc done",
+	);
+	assert(
+		office.text === "post to [REDACTED:office-webhook] done",
+		"legacy office webhook",
+	);
+
 	// external-scanner hits layered on top of regex (synthetic gitleaks findings)
 	const blob = "xYz1234567890+/AbCdEfGhIjKlMnOpQrStUvWxYz";
 	const withHit = redactStringWith(`bare ${blob} end`, [
