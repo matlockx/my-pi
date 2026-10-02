@@ -20,6 +20,7 @@ When unsure, **ask the developer** before making changes.
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | Every open point put to the user is a decidable question: context, options, recommendation, cost of deferring | List bare topics, statuses, or headings under "open questions" |
+| G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
 
 ## Asking the User (MUST)
 
@@ -237,6 +238,23 @@ rules, not a replacement for this one. A repo with no BDRs still owes tests for 
 When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDRs before
 changing assertions. A failing test may protect a business rule — fix the code, not the test,
 unless a BDR has been explicitly superseded. When in doubt, ask the user before modifying test assertions.
+
+### New code coverage is at least 80 %
+
+SonarQube's quality gate fails a PR when coverage on new code is below **80 %**. Coverage on
+new code combines line and branch (condition) coverage over every added or changed line,
+exemptions above included: an untested accessor or wiring file still counts against the gate.
+
+- Before reporting work done, run the repo's coverage tool (`go test -coverprofile`,
+  `pytest --cov`, `vitest --coverage`, …) and check the changed lines and branches, not the
+  package total. Report the figure for the changed files.
+- Below 80 % → add tests for the uncovered branches until the changed code reaches it. Error
+  paths and `if err != nil` branches are the usual gap.
+- Reach it with real assertions. Never add assertion-free tests, never extend
+  `sonar.exclusions`/`sonar.coverage.exclusions`, and never move logic into excluded files to
+  pass the gate. Generated code is the one exclusion that needs no approval.
+- Not reachable without infrastructure the repo cannot run → say so with the measured figure,
+  and ask the user before the PR is opened.
 
 ### Rule traceability (repos with `docs/bdr/` or `docs/adr/`)
 
