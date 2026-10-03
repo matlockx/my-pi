@@ -210,6 +210,10 @@ repository commits separately. Never commit or push before that approval.
 
 Tests are contracts. Never modify assertions solely to match new code. Never delete tests without approval. Investigate first.
 
+No coverage-percentage target (no 80% gate). Do not run coverage reports, coverage thresholds, or
+Sonar scans (`sonar`, `sonar-scanner`, SonarCloud/SonarQube analysis) unless the user explicitly asks.
+SonarCloud rules cited in the language skills are writing guidance, not a reason to run a scan.
+
 ### New code is tested by default
 
 **Every new or changed function with behaviour gets a test in the same task.** Not the next

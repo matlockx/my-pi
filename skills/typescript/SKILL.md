@@ -7,6 +7,8 @@ description: Write and review TypeScript code following strict type safety, type
 
 Guide writing and reviewing TypeScript code that is compliant with typescript-eslint's strict type-checked rules, SonarCloud's default JavaScript/TypeScript analysis rules, and modern TypeScript best practices. This covers security vulnerabilities, type safety, reliability bugs, and maintainability code smells.
 
+SonarCloud rules here are writing guidance. Do not run Sonar scans or coverage gates unless the user explicitly asks.
+
 ## When to use me
 
 Use this skill when:

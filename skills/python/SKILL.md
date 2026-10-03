@@ -7,6 +7,8 @@ description: Write and review Python code following Ruff and SonarCloud SonarPyt
 
 Guide writing and reviewing Python code that is compliant with Ruff's comprehensive rule set and SonarCloud's default SonarPython analysis rules. This covers security vulnerabilities, reliability bugs, maintainability code smells, type safety, and modern Python idioms.
 
+SonarCloud rules here are writing guidance. Do not run Sonar scans or coverage gates unless the user explicitly asks.
+
 ## When to use me
 
 Use this skill when:

@@ -7,6 +7,8 @@ description: Write and review Bash scripts following SonarCloud default rule set
 
 Guide writing and reviewing Bash scripts that are compliant with SonarCloud's default Shell analysis rule set (41 rules). This covers security vulnerabilities, reliability bugs, and maintainability code smells.
 
+SonarCloud rules here are writing guidance. Do not run Sonar scans or coverage gates unless the user explicitly asks.
+
 ## When to use me
 
 Use this skill when:

@@ -1,11 +1,11 @@
 ---
 name: tdd-workflow
-description: Use this skill when writing new features, fixing bugs, or refactoring code. Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
+description: Use this skill when writing new features, fixing bugs, or refactoring code. Enforces test-driven development with unit, integration, and E2E tests.
 ---
 
 # Test-Driven Development Workflow
 
-This skill ensures all code development follows TDD principles with comprehensive test coverage.
+This skill ensures all code development follows TDD principles with tests for edge cases and error paths.
 
 ## When to Activate
 
@@ -21,9 +21,10 @@ This skill ensures all code development follows TDD principles with comprehensiv
 
 ALWAYS write tests first, then implement code to make tests pass.
 
-### 2. Coverage Requirements
+### 2. What to Cover
 
-- Minimum 80% coverage (unit + integration + E2E)
+No coverage-percentage target. Measure coverage or run coverage/Sonar tooling only when the user explicitly asks.
+
 - All edge cases covered
 - Error scenarios tested
 - Boundary conditions verified
@@ -141,17 +142,6 @@ Improve code quality while keeping tests green:
 - Improve naming
 - Optimize performance
 - Enhance readability
-
-### Step 7: Verify Coverage
-
-```bash
-go test ./... -coverprofile=coverage.out -covermode=atomic
-go tool cover -func=coverage.out
-# Verify 80%+ coverage achieved
-
-# HTML report for visual inspection
-go tool cover -html=coverage.out -o coverage.html
-```
 
 ## Testing Patterns
 
@@ -330,26 +320,6 @@ func MakeOrder(t *testing.T, overrides ...func(*Order)) *Order {
 }
 ```
 
-## Test Coverage Verification
-
-### Run Coverage Report
-
-```bash
-go test ./... -coverprofile=coverage.out -covermode=atomic
-go tool cover -func=coverage.out
-```
-
-### Coverage Thresholds (enforced in CI)
-
-```bash
-# Check that total coverage meets threshold
-COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-if (( $(echo "$COVERAGE < 80" | bc -l) )); then
-    echo "Coverage $COVERAGE% is below 80% threshold"
-    exit 1
-fi
-```
-
 ## Common Testing Mistakes to Avoid
 
 ### WRONG: Testing Implementation Details
@@ -414,7 +384,6 @@ go test ./... -race -count=1
 
 ## Success Metrics
 
-- 80%+ code coverage achieved
 - All tests passing (green)
 - No skipped or disabled tests without reason
 - Tests run with `-race` in CI

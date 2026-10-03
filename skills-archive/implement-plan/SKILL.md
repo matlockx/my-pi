@@ -46,7 +46,7 @@ When given a spec path:
 
 > **Before writing any code**, load and follow the companion skills:
 > - `/skill:golang` — Go style, naming, error handling, patterns
-> - `/skill:tdd-workflow` — write tests first, verify 80%+ coverage
+> - `/skill:tdd-workflow` — write tests first (no coverage target unless the user asks)
 >
 > All implementation must conform to these standards throughout.
 

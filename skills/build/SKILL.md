@@ -103,7 +103,7 @@ When the issue is a bug or unexpected behavior:
 - **Never delete tests** without explicit user approval.
 - **Write tests for new code** — follow TDD when appropriate (`/skill:tdd-workflow` patterns).
 - **Run the full relevant test suite** after changes, not just the new tests.
-- **Target 80%+ coverage** for new code paths.
+- **No coverage-percentage target.** Run coverage reports or Sonar scans only when the user explicitly asks.
 
 ## Code Quality
 
