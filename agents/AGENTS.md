@@ -279,6 +279,29 @@ Every business rule declares, in its record, how a violation becomes visible: th
 audit/history entry, and the metric. Tests assert those, not only the happy outcome — an
 unplanned edge case must show up in monitoring rather than silently corrupting state.
 
+### Labelled counters start at zero
+
+A Prometheus counter vector creates a series on its first increment, already at 1. `increase()`
+and `rate()` never see that first event, and a counter that never moved is not a field in the
+metrics store, so an ES|QL panel over it fails with `Unknown column`. Apply the following directly,
+without asking, whenever code adds, changes, or increments a labelled counter in a service:
+
+- Create every label combination the service can emit at 0 on start (`vec.WithLabelValues(...)`
+  without `Inc()`), before the first message, request, or job pass. Closed label sets come from
+  the constants the increment sites use; open ones (topics, job names, enabled checks) come from
+  the configured set, at the call site that knows it.
+- A list that mirrors constants carries a `DEV-NOTE:` naming the constants it must stay in step
+  with. Label values used in more than one place become named constants.
+- The test asserts the series count per metric after initialisation
+  (`testutil.GatherAndCount(prometheus.DefaultGatherer, name)`), so a missing combination fails.
+- Dashboards over such counters drop zero buckets (`| WHERE x > 0` after `STATS`), so the legend
+  lists what happened rather than every combination.
+
+References: payment-service `internal/service/payment/service.go` (`init`), order-service
+`internal/event/order.go` (`init`), financial-aggregation-service `InitMetrics` in
+`internal/consumer`, `internal/handler`, `internal/service`, called from `consumers.go` and
+`jobs.go`.
+
 ### Adversarial matrix
 
 For money paths and any at-least-once message consumer, the rule's tests include: duplicate
