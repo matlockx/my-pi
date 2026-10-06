@@ -292,8 +292,9 @@ without asking, whenever code adds, changes, or increments a labelled counter in
   the configured set, at the call site that knows it.
 - A list that mirrors constants carries a `DEV-NOTE:` naming the constants it must stay in step
   with. Label values used in more than one place become named constants.
-- The test asserts the series count per metric after initialisation
-  (`testutil.GatherAndCount(prometheus.DefaultGatherer, name)`), so a missing combination fails.
+- The test calls the same initialisation functions start-up calls (extract them if inlined) and
+  asserts, per metric, the series count (`testutil.GatherAndCount(prometheus.DefaultGatherer,
+  name)`) and that every gathered series is 0, so a missing or pre-incremented combination fails.
 - Dashboards over such counters drop zero buckets (`| WHERE x > 0` after `STATS`), so the legend
   lists what happened rather than every combination.
 
