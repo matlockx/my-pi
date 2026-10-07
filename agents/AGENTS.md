@@ -19,7 +19,7 @@ When unsure, **ask the developer** before making changes.
 | G-11 | Doc comments: state the fact plainly and name the source (`as reported by the provider`) | Anthropomorphise or use chatty phrasing (`when it says`, `we`, `you'll want to`) |
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
-| G-14 | Every open point put to the user is a decidable question: context, options, recommendation, cost of deferring | List bare topics, statuses, or headings under "open questions" |
+| G-14 | Every open point put to the user is a decidable question: context, options, recommendation, cost of deferring; two or more questions are walked through one at a time | List bare topics, statuses, or headings under "open questions"; dump several questions in one block |
 | G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
 
 ## Asking the User (MUST)
@@ -47,6 +47,16 @@ Rules:
   owns and no technical criterion separates the options — say that explicitly rather than staying
   silent.
 - Order questions by what blocks the most work, not by the order they were discovered.
+- Two or more questions: walk the user through them **one at a time**, in that order. Ask the
+  first in full shape (context, options, recommendation, cost of deferring), wait for the answer,
+  then ask the next — re-checking it against the answer just given, and dropping or rewording it
+  when that answer settled or changed it. Use the interactive question tool when the harness has
+  one (`ask`, with the recommended option marked); otherwise ask in chat and stop. A batch summary
+  of all questions may precede the walk-through as an overview, never replace it.
+- With `ask`, the `question` field carries only the one-sentence question. Context, cost of
+  deferring, and the reason for the recommendation go in the chat text written before the call;
+  each option's consequence goes in its `description`. The ask dialog clamps the question text to
+  a few lines and drops its line breaks, so anything longer is cut off on a normal-height terminal.
 
 Example of what not to write:
 
