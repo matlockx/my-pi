@@ -157,17 +157,23 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	/** Tracked status plus diff of one repository; "" when its tree is clean. */
+	/** Tracked status plus diff of one repository; "" when its tree is clean or no longer exists. */
 	async function repoChanges(root: string): Promise<string> {
-		const status = await pi.exec("git", ["status", "--porcelain"], {
-			cwd: root,
-		});
-		if (status.code !== 0) return "";
-		const tracked = trackedStatus(status.stdout);
-		if (!tracked) return "";
+		// DEV-NOTE: rootCache outlives the directory (removed worktree, deleted temp repo);
+		// spawning git with a missing cwd rejects with "ENOENT posix_spawn 'git'".
+		try {
+			const status = await pi.exec("git", ["status", "--porcelain"], {
+				cwd: root,
+			});
+			if (status.code !== 0) return "";
+			const tracked = trackedStatus(status.stdout);
+			if (!tracked) return "";
 
-		const diff = await pi.exec("git", ["diff", "HEAD"], { cwd: root });
-		return `${root}\n${tracked}\n${diff.stdout ?? ""}`;
+			const diff = await pi.exec("git", ["diff", "HEAD"], { cwd: root });
+			return `${root}\n${tracked}\n${diff.stdout ?? ""}`;
+		} catch {
+			return "";
+		}
 	}
 
 	// DEV-NOTE: the session directory is not where the work necessarily happened — a turn

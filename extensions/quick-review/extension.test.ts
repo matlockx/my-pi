@@ -13,7 +13,7 @@ import extension from "./index.ts";
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
 /** Loads the extension against a fresh mock pi; the confirm dialog stays open until answered. */
-function setup() {
+function setup(exec = async (..._args: unknown[]) => ({ code: 1, stdout: "", stderr: "" })) {
 	const handlers = new Map<string, Handler>();
 	const sent: Array<{ text: string; options: unknown }> = [];
 	const dialog = Promise.withResolvers<boolean>();
@@ -26,7 +26,7 @@ function setup() {
 		sendMessage: () => {},
 		sendUserMessage: (text: string, options: unknown) =>
 			sent.push({ text, options }),
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+		exec,
 	};
 	const ctx = {
 		cwd: "/nonexistent",
@@ -42,6 +42,7 @@ function setup() {
 
 	return {
 		sent,
+		startAgent: () => handlers.get("agent_start")!({}, ctx),
 		endTurn: (text: string) =>
 			handlers.get("agent_end")!(
 				{
@@ -87,4 +88,16 @@ test("declining the fix dialog sends nothing", { timeout: 2000 }, async () => {
 	await endTurn(LOW_ONLY);
 	await answer(false);
 	assert.equal(sent.length, 0);
+});
+
+test("repository deleted after its root was cached is skipped", async () => {
+	let gone = false;
+	const { startAgent } = setup(async (_cmd, args) => {
+		if (gone) throw new Error("ENOENT: no such file or directory, posix_spawn 'git'");
+		if ((args as string[])[0] === "rev-parse") return { code: 0, stdout: "/repo\n", stderr: "" };
+		return { code: 0, stdout: "", stderr: "" };
+	});
+	await startAgent(); // caches /nonexistent -> /repo
+	gone = true;
+	await assert.doesNotReject(startAgent());
 });
