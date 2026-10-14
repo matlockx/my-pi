@@ -19,10 +19,22 @@ When unsure, **ask the developer** before making changes.
 | G-11 | Doc comments: state the fact plainly and name the source (`as reported by the provider`) | Anthropomorphise or use chatty phrasing (`when it says`, `we`, `you'll want to`) |
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
-| G-14 | Every open point put to the user is a decidable question: context, options, recommendation, cost of deferring; two or more questions are walked through one at a time | List bare topics, statuses, or headings under "open questions"; dump several questions in one block |
+| G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
 | G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
 
-## Asking the User (MUST)
+## Asking the User (HARD RULE)
+
+**HARD RULE — no exceptions, no shortcuts, every time.** Each decision or question put to the user:
+
+- is asked **one at a time**, never several in one block;
+- carries a **recommendation**;
+- explains **why the recommended option wins**;
+- explains **why each other option loses**.
+
+A question missing any of these is not sent; it is rewritten first. The rule applies to small
+questions as much as large ones, and terse output styles (caveman, lean, ponytail) do not shorten
+it: the reasons may be one line each, but they are never dropped. The user should never have to ask
+"what do you recommend?" or "why not the other one?".
 
 When something is genuinely needed from the user, it is asked as a question the user can answer
 without opening the code. A heading with a topic name is not a question. A status report labelled
@@ -33,7 +45,9 @@ Each item follows this shape:
 1. **The question**, one sentence, ending in a question mark, answerable with a choice or a yes/no.
 2. **Context**: what exists today, what is blocked by the answer, and where (file, record, service).
 3. **Options**, whenever more than one path exists — each with its consequence, not just its name.
-4. **Recommendation**, always when one option is defensible, with the one reason it wins.
+4. **Recommendation** — mandatory. Name the option, state why it wins (the criterion that decides
+   it), then state for **every** other option why it loses against that criterion. "Also fine" or
+   "more work" without the concrete cost is not a reason.
 5. **Cost of deferring**: what stays broken, unwritten, or unreleasable until the answer arrives.
 
 Rules:
@@ -44,19 +58,21 @@ Rules:
   `DEV-TODO:` anchor instead, and do not ask the user to respond to it.
 - Never merge several decisions into one item. One question, one answer.
 - Recommendation is withheld only when the choice is a business or product decision the developer
-  owns and no technical criterion separates the options — say that explicitly rather than staying
-  silent.
+  owns and no technical criterion separates the options. Say that explicitly, name the criterion
+  that is missing, and still state what each option costs — never stay silent.
 - Order questions by what blocks the most work, not by the order they were discovered.
 - Two or more questions: walk the user through them **one at a time**, in that order. Ask the
-  first in full shape (context, options, recommendation, cost of deferring), wait for the answer,
-  then ask the next — re-checking it against the answer just given, and dropping or rewording it
-  when that answer settled or changed it. Use the interactive question tool when the harness has
-  one (`ask`, with the recommended option marked); otherwise ask in chat and stop. A batch summary
-  of all questions may precede the walk-through as an overview, never replace it.
+  first in full shape (context, options, recommendation with why it wins and why each other option
+  loses, cost of deferring), wait for the answer, then ask the next — re-checking it against the
+  answer just given, and dropping or rewording it when that answer settled or changed it. Use the
+  interactive question tool when the harness has one (`ask`, with the recommended option marked);
+  otherwise ask in chat and stop. A batch summary of all questions may precede the walk-through as
+  an overview, never replace it.
 - With `ask`, the `question` field carries only the one-sentence question. Context, cost of
-  deferring, and the reason for the recommendation go in the chat text written before the call;
-  each option's consequence goes in its `description`. The ask dialog clamps the question text to
-  a few lines and drops its line breaks, so anything longer is cut off on a normal-height terminal.
+  deferring, why the recommendation wins and why each other option loses go in the chat text
+  written before the call; each option's consequence goes in its `description`. The ask dialog
+  clamps the question text to a few lines and drops its line breaks, so anything longer is cut off
+  on a normal-height terminal.
 
 Example of what not to write:
 
@@ -73,6 +89,7 @@ Example of the same point asked properly:
    a) Fixed allowlist in BDR-0001 — typos rejected at ingest, new partners need a record change.
    b) Keep convention-based — no record churn, typos stay invisible until the warehouse query fails.
    Recommendation: (a). The warehouse cost of a bad column is higher than the cost of editing a record.
+   (b) loses: it saves one record edit per partner but defers every typo to a failed warehouse query.
    Deferring: partner onboarding stays unvalidated; no data is lost, so this does not block release.
 ```
 
