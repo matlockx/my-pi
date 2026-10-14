@@ -13,6 +13,10 @@
  * Toggle per session with /redact-secrets. Default: on. State resets to on for
  * every new/resumed session (module re-binds), matching "default on".
  *
+ * Each secret value gets its own placeholder (`[REDACTED:rule#id]`), kept in an
+ * in-memory vault for the session. A tool call carrying a placeholder asks the
+ * user first: write the plain values, write the placeholders, or block.
+ *
  * DEV-NOTE: detection rules live in patterns.ts; pure redaction in redact.ts.
  */
 
@@ -24,9 +28,12 @@ import { checkToolCall } from "./fileguard.ts";
 import { scanSecrets } from "./gitleaks.ts";
 import {
 	collectStrings,
+	placeholdersIn,
 	redactDeep,
 	redactDeepWith,
 	redactStringWith,
+	restoreDeep,
+	type Vault,
 } from "./redact.ts";
 
 // Audit log. METADATA ONLY — never the secret value, or we relocate the leak to disk.
@@ -51,10 +58,15 @@ function logHit(
 	}
 }
 
+const WRITE_PLAIN = "Write the plain secret values";
+const WRITE_PLACEHOLDERS = "Write the placeholder text as-is";
+const BLOCK = "Block the tool call";
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let totalRedacted = 0;
 	const loggedEgress = new Set<string>(); // dedupe repeated egress-net hits (same context secret every turn)
+	const vault: Vault = new Map(); // secret value -> placeholder; memory only
 
 	const setStatus = (ctx: {
 		ui: { setStatus: (id: string, text: string) => void };
@@ -85,7 +97,7 @@ export default function (pi: ExtensionAPI) {
 	// --- Egress net: full outgoing payload (messages + system prompt) ---
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!enabled) return;
-		const r = redactDeep(event.payload);
+		const r = redactDeep(event.payload, vault);
 		if (r.count > 0) {
 			totalRedacted += r.count;
 			// Egress net fires every turn on the same secret; log only when it catches
@@ -108,13 +120,51 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- Wall: block reads of secret-bearing files outright (.env, *.tfvars, keys) ---
-	// Runs even when redaction is toggled off: a wall is not a net.
-	pi.on("tool_call", (event) => {
-		const reason = checkToolCall(
-			event.toolName,
-			event.input as Record<string, unknown>,
+	// --- Gate: ask before a placeholder lands in a file or command as literal text ---
+	// Both run even when redaction is toggled off: a wall is not a net. The agent
+	// only sees placeholders, so copying context text into a write (edit, write,
+	// bash heredoc) would replace the secret with its placeholder.
+	pi.on("tool_call", async (event, ctx) => {
+		const input = event.input as Record<string, unknown>;
+		const reason = checkToolCall(event.toolName, input);
+		if (reason) return { block: true, reason };
+
+		const found = placeholdersIn(input);
+		if (found.length === 0) return undefined;
+		const known = new Set(vault.values());
+		const unknown = found.filter((p) => !known.has(p));
+		const declined =
+			`Blocked: the input carries redacted placeholders (${found.join(", ")}). ` +
+			"Each stands for a secret value hidden from you; it would land as literal text. " +
+			"Ask the user how to proceed, or use an obvious dummy value instead.";
+		if (!ctx.hasUI) return { block: true, reason: declined };
+
+		// Plain is offered only when every placeholder can be restored: a partial
+		// restore would still write placeholder text under the "plain" label.
+		const choice = await ctx.ui.select(
+			`${event.toolName} input contains redacted secrets: ${found.join(", ")}` +
+				(unknown.length
+					? `. Value unknown for ${unknown.join(", ")} (not redacted in this session).`
+					: ""),
+			unknown.length ? [WRITE_PLACEHOLDERS, BLOCK] : [WRITE_PLAIN, WRITE_PLACEHOLDERS, BLOCK],
 		);
-		return reason ? { block: true, reason } : undefined;
+		if (choice === WRITE_PLACEHOLDERS) return undefined;
+		if (choice !== WRITE_PLAIN) return { block: true, reason: declined };
+
+		const restored = restoreDeep(input, vault) as Record<string, unknown>;
+		// pi reads the mutated event.input; omp reads the returned input.
+		Object.assign(input, restored);
+		logHit(
+			ctx.sessionManager?.getSessionId?.(),
+			`restored into ${event.toolName} input`,
+			found.length,
+			found.map((p) => p.slice("[REDACTED:".length).split(/[#\]]/)[0]),
+		);
+		ctx.ui.notify(
+			`Restored ${found.length} plain secret value${found.length > 1 ? "s" : ""} into ${event.toolName} input`,
+			"warning",
+		);
+		return { input: restored };
 	});
 
 	// --- Ingestion: tool output (bash/read/grep/...) — the `cat .env` vector ---
@@ -122,7 +172,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		if (!enabled) return;
 		const hits = await scanSecrets(collectStrings(event.content).join("\n"));
-		const r = redactDeepWith(event.content, hits);
+		const r = redactDeepWith(event.content, hits, vault);
 		if (r.count > 0) {
 			notify(ctx, r.count, `${event.toolName} result`, r.rules);
 			return { content: r.value as typeof event.content };
@@ -134,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (!enabled || event.source === "extension") return { action: "continue" };
 		const hits = await scanSecrets(event.text);
-		const r = redactStringWith(event.text, hits);
+		const r = redactStringWith(event.text, hits, vault);
 		if (r.count > 0) {
 			notify(ctx, r.count, "your input", r.rules);
 			return { action: "transform", text: r.text };
@@ -157,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 					const result: any = await (local.exec as any)(command, cwd, options);
 					if (typeof result?.output === "string") {
 						const hits = await scanSecrets(result.output);
-						const r = redactStringWith(result.output, hits);
+						const r = redactStringWith(result.output, hits, vault);
 						if (r.count > 0) {
 							notify(ctx, r.count, "shell output", r.rules);
 							return { ...result, output: r.text };

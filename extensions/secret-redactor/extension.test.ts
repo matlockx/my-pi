@@ -57,7 +57,7 @@ const GH = `ghp_${"a".repeat(36)}`;
 	);
 	const s = JSON.stringify(out);
 	assert.ok(!s.includes(GH), "egress: secret removed from payload");
-	assert.ok(s.includes("[REDACTED:github-pat]"), "egress: placeholder present");
+	assert.match(s, /\[REDACTED:github-pat#[0-9a-f]{8}\]/, "egress: placeholder with id present");
 	assert.ok(s.includes('"role":"user"'), "egress: non-secret fields preserved");
 }
 
@@ -128,6 +128,77 @@ const GH = `ghp_${"a".repeat(36)}`;
 	);
 	assert.equal(inp.action, "continue", "toggle off: input no-op");
 	await commands.get("redact-secrets")!.handler("on", ctx); // restore
+}
+
+// 5b. tool_call with a placeholder asks; plain restores the value, block blocks
+{
+	const egress = handlers.get("before_provider_request")!(
+		{ payload: { messages: [{ content: `k ${GH}` }] } },
+		ctx,
+	);
+	const ph = JSON.stringify(egress).match(/\[REDACTED:github-pat#[0-9a-f]{8}\]/)![0];
+	let offered: string[] = [];
+	const uiCtx = (pick: (opts: string[]) => string | undefined) => ({
+		...ctx,
+		hasUI: true,
+		ui: {
+			...ctx.ui,
+			select: async (_title: string, opts: string[]) => {
+				offered = opts;
+				return pick(opts);
+			},
+		},
+	});
+	const call = (content: string) => ({
+		toolName: "write",
+		input: { path: "x_test.go", content },
+	});
+
+	const plainEvent = call(`apiKey = "${ph}"`);
+	const plain = await handlers.get("tool_call")!(
+		plainEvent,
+		uiCtx((o) => o.find((x) => x.startsWith("Write the plain"))),
+	);
+	assert.equal(plain.input.content, `apiKey = "${GH}"`, "gate: plain returned (omp)");
+	assert.equal(plainEvent.input.content, `apiKey = "${GH}"`, "gate: plain mutated (pi)");
+	assert.equal(plain.block, undefined, "gate: plain not blocked");
+
+	const blocked = await handlers.get("tool_call")!(
+		call(ph),
+		uiCtx((o) => o.find((x) => x.startsWith("Block"))),
+	);
+	assert.equal(blocked.block, true, "gate: block option blocks");
+	assert.ok(blocked.reason.includes(ph), "gate: reason names the placeholder");
+
+	const dismissed = await handlers.get("tool_call")!(call(ph), uiCtx(() => undefined));
+	assert.equal(dismissed.block, true, "gate: dismissed dialog blocks");
+
+	const asIs = await handlers.get("tool_call")!(
+		call(ph),
+		uiCtx((o) => o.find((x) => x.startsWith("Write the placeholder"))),
+	);
+	assert.equal(asIs, undefined, "gate: as-is passes input unchanged");
+
+	const unknownPh = "[REDACTED:aws-access-key#deadbeef]";
+	await handlers.get("tool_call")!(
+		call(`${ph} ${unknownPh}`),
+		uiCtx((o) => o[0]),
+	);
+	assert.ok(
+		!offered.some((x) => x.startsWith("Write the plain")),
+		"gate: no plain option when a value is unknown",
+	);
+
+	const noUi = await handlers.get("tool_call")!(call(ph), ctx);
+	assert.equal(noUi.block, true, "gate: blocks without UI");
+
+	offered = [];
+	const clean = await handlers.get("tool_call")!(
+		call("no secrets"),
+		uiCtx(() => "unreachable"),
+	);
+	assert.equal(clean, undefined, "gate: clean input passes");
+	assert.deepEqual(offered, [], "gate: clean input asks nothing");
 }
 
 // 6. audit log has metadata but NEVER the secret value (security-critical)

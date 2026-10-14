@@ -2,7 +2,32 @@
  * Pure redaction core. No pi imports — importable by the self-check below.
  */
 
+import { randomBytes } from "node:crypto";
 import { RULES } from "./patterns.ts";
+
+/**
+ * Secret value → its placeholder. A value keeps its placeholder for the life of
+ * the map, so repeated redaction of the same text yields the same output.
+ * Held in memory only; never logged or persisted.
+ */
+export type Vault = Map<string, string>;
+
+/** Matches every placeholder, with or without an id. */
+const PLACEHOLDER = /\[REDACTED:([^\]#\s]+)(?:#[0-9a-f]+)?\]/g;
+
+// Without a vault the placeholder carries no id and cannot be restored.
+function placeholder(rule: string, secret: string, vault?: Vault): string {
+	if (!vault) return `[REDACTED:${rule}]`;
+	let p = vault.get(secret);
+	if (!p) {
+		// DEV-NOTE: random ids, not a counter: placeholders persisted in a session
+		// outlive the process, and a counter restarting at 1 would map an old
+		// placeholder to a different secret.
+		p = `[REDACTED:${rule}#${randomBytes(4).toString("hex")}]`;
+		vault.set(secret, p);
+	}
+	return p;
+}
 
 export interface RedactResult {
 	value: unknown;
@@ -11,7 +36,10 @@ export interface RedactResult {
 }
 
 /** Redact all secrets in a single string. */
-export function redactString(text: string): {
+export function redactString(
+	text: string,
+	vault?: Vault,
+): {
 	text: string;
 	count: number;
 	rules: string[];
@@ -28,10 +56,10 @@ export function redactString(text: string): {
 			if (rule.secretGroup != null) {
 				const secret = groups[rule.secretGroup - 1];
 				if (typeof secret === "string" && secret.length > 0) {
-					return full.replace(secret, `[REDACTED:${rule.name}]`);
+					return full.replace(secret, placeholder(rule.name, secret, vault));
 				}
 			}
-			return `[REDACTED:${rule.name}]`;
+			return placeholder(rule.name, full, vault);
 		});
 	}
 	return { text: out, count, rules };
@@ -51,20 +79,20 @@ export interface ExternalHit {
 export function redactStringWith(
 	text: string,
 	hits: ExternalHit[] = [],
+	vault?: Vault,
 ): { text: string; count: number; rules: string[] } {
-	const base = redactString(text);
+	const base = redactString(text, vault);
 	let out = base.text;
 	let count = base.count;
 	const rules = [...base.rules];
 
 	for (const hit of hits) {
-		if (!hit.secret || hit.secret.length < 4) continue; // ignore trivially short matches
-		const next = out.split(hit.secret).join(`[REDACTED:${hit.rule}]`);
-		if (next !== out) {
-			count++;
-			rules.push(hit.rule);
-			out = next;
-		}
+		// ignore trivially short matches; hits cover the whole payload, not this leaf
+		if (!hit.secret || hit.secret.length < 4 || !out.includes(hit.secret))
+			continue;
+		out = out.split(hit.secret).join(placeholder(hit.rule, hit.secret, vault));
+		count++;
+		rules.push(hit.rule);
 	}
 	return { text: out, count, rules };
 }
@@ -117,16 +145,36 @@ function redactDeepCore(
 }
 
 /** Recursively redact every string leaf using the in-process regex rules. */
-export function redactDeep(value: unknown): RedactResult {
-	return redactDeepCore(value, redactString);
+export function redactDeep(value: unknown, vault?: Vault): RedactResult {
+	return redactDeepCore(value, (s) => redactString(s, vault));
 }
 
 /** redactDeep + external-scanner hits layered on top. */
 export function redactDeepWith(
 	value: unknown,
 	hits: ExternalHit[] = [],
+	vault?: Vault,
 ): RedactResult {
-	return redactDeepCore(value, (s) => redactStringWith(s, hits));
+	return redactDeepCore(value, (s) => redactStringWith(s, hits, vault));
+}
+
+/** Distinct placeholders in every string leaf of a value. */
+export function placeholdersIn(value: unknown): string[] {
+	const found = collectStrings(value).flatMap((s) => s.match(PLACEHOLDER) ?? []);
+	return [...new Set(found)];
+}
+
+/**
+ * Replace every placeholder recorded in the vault with its secret value, in
+ * every string leaf. Placeholders absent from the vault stay as they are.
+ */
+export function restoreDeep(value: unknown, vault: Vault): unknown {
+	const secrets = new Map([...vault].map(([secret, p]) => [p, secret]));
+	return redactDeepCore(value, (s) => ({
+		text: s.replace(PLACEHOLDER, (p) => secrets.get(p) ?? p),
+		count: 0,
+		rules: [],
+	})).value;
 }
 
 // --- self-check: `node --experimental-strip-types redact.ts` or `tsx redact.ts` ---
@@ -269,6 +317,28 @@ if (process.argv[1]?.endsWith("redact.ts")) {
 		[{ secret: blob, rule: "gitleaks:generic" }],
 	);
 	assert(deepBoth.count === 2, "redactDeepWith union count");
+
+	// vault: one stable placeholder per secret value, restorable; legacy ones are not
+	const vault: Vault = new Map();
+	const gh2 = `ghp_${"b".repeat(36)}`;
+	const v1 = redactDeepWith({ a: `x ${blob} ${gh2}` }, [
+		{ secret: blob, rule: "gitleaks:generic" },
+	], vault).value as { a: string };
+	const v2 = redactString(`again ${gh2}`, vault).text;
+	const [pBlob, pGh] = placeholdersIn(v1);
+	assert(
+		/^\[REDACTED:gitleaks:generic#[0-9a-f]{8}\]$/.test(pBlob) && pBlob !== pGh,
+		"vault: distinct ids per secret",
+	);
+	assert(v2 === `again ${pGh}`, "vault: same secret keeps its placeholder");
+	const restored = restoreDeep(
+		{ w: [`${pGh} ${pBlob} [REDACTED:aws-access-key]`] },
+		vault,
+	) as { w: string[] };
+	assert(
+		restored.w[0] === `${gh2} ${blob} [REDACTED:aws-access-key]`,
+		"restoreDeep: known restored, unknown kept",
+	);
 
 	console.log("redact self-check: ok");
 }
