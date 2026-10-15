@@ -19,7 +19,7 @@ const logPath = join(
 );
 process.env.PI_SECRET_REDACTOR_LOG = logPath;
 
-const { default: extension } = await import("./index.ts");
+const { default: extension, placeholderContext } = await import("./index.ts");
 
 // --- minimal mock pi + ctx ---
 type Handler = (event: any, ctx: any) => any;
@@ -138,12 +138,14 @@ const GH = `ghp_${"a".repeat(36)}`;
 	);
 	const ph = JSON.stringify(egress).match(/\[REDACTED:github-pat#[0-9a-f]{8}\]/)![0];
 	let offered: string[] = [];
+	let asked = "";
 	const uiCtx = (pick: (opts: string[]) => string | undefined) => ({
 		...ctx,
 		hasUI: true,
 		ui: {
 			...ctx.ui,
-			select: async (_title: string, opts: string[]) => {
+			select: async (title: string, opts: string[]) => {
+				asked = title;
 				offered = opts;
 				return pick(opts);
 			},
@@ -162,6 +164,27 @@ const GH = `ghp_${"a".repeat(36)}`;
 	assert.equal(plain.input.content, `apiKey = "${GH}"`, "gate: plain returned (omp)");
 	assert.equal(plainEvent.input.content, `apiKey = "${GH}"`, "gate: plain mutated (pi)");
 	assert.equal(plain.block, undefined, "gate: plain not blocked");
+	assert.ok(asked.includes("Target: x_test.go"), "gate: dialog names the target file");
+	assert.ok(asked.includes(`\n  apiKey = "${ph}"`), "gate: dialog shows the offending line");
+
+	const many = Array.from({ length: 7 }, (_, i) => `k${i} ${ph}`).join("\n");
+	const capped = placeholderContext({
+		cwd: "/repo",
+		command: `${"x".repeat(200)}${ph}${"y".repeat(200)}\n${many}`,
+	});
+	assert.ok(capped.startsWith("\nTarget: /repo\nIn:"), "context: cwd is the fallback target");
+	assert.ok(
+		capped.includes(`\n  …${"x".repeat(60)}${ph}${"y".repeat(100 - ph.length)}…\n`),
+		"context: long line windowed around the placeholder",
+	);
+	assert.ok(capped.endsWith("\n  … 3 more"), "context: lines beyond 5 summarised");
+	assert.equal(placeholderContext({ content: "none" }), "", "context: nothing to show");
+	assert.ok(
+		placeholderContext({
+			input: `[a_test.go#0CB1]\nPUT 3:\n+k = "${ph}"\n[b.go#9E0D]\nPUT >1:\n+x`,
+		}).startsWith("\nTarget: a_test.go, b.go\nIn:\n  +k ="),
+		"context: edit patch headers are the target",
+	);
 
 	const blocked = await handlers.get("tool_call")!(
 		call(ph),

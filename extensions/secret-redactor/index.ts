@@ -42,6 +42,35 @@ const LOG_PATH =
 	process.env.PI_SECRET_REDACTOR_LOG ??
 	join(homedir(), ".pi", "agent", "secret-redactor.log");
 
+/**
+ * Target and offending lines of a tool input, for the placeholder gate dialog.
+ * Target is the first of path, file_path, cwd present in the input, else the
+ * `[path#TAG]` file headers of an edit patch in `input`. Lists at most
+ * 5 lines containing a placeholder, each trimmed; a line over 160 characters is
+ * cut to 160 characters starting 60 before its first placeholder, marked with "…".
+ */
+export function placeholderContext(input: Record<string, unknown>): string {
+	const headers =
+		typeof input.input === "string"
+			? [...input.input.matchAll(/^\[([^\]\n]+)#[0-9A-F]{4}\]$/gm)].map((m) => m[1])
+			: [];
+	const target =
+		[input.path, input.file_path, input.cwd].find((v) => typeof v === "string") ??
+		(headers.length ? headers.join(", ") : undefined);
+	const lines = collectStrings(input)
+		.flatMap((s) => s.split("\n"))
+		.filter((l) => l.includes("[REDACTED:"))
+		.map((l) => {
+			const t = l.trim();
+			if (t.length <= 160) return t;
+			const from = Math.max(0, t.indexOf("[REDACTED:") - 60);
+			return `${from > 0 ? "…" : ""}${t.slice(from, from + 160)}${from + 160 < t.length ? "…" : ""}`;
+		});
+	const shown = lines.slice(0, 5).map((l) => `\n  ${l}`).join("");
+	const more = lines.length > 5 ? `\n  … ${lines.length - 5} more` : "";
+	return (target ? `\nTarget: ${target}` : "") + (lines.length ? `\nIn:${shown}${more}` : "");
+}
+
 function logHit(
 	sessionId: string | undefined,
 	where: string,
@@ -145,7 +174,8 @@ export default function (pi: ExtensionAPI) {
 			`${event.toolName} input contains redacted secrets: ${found.join(", ")}` +
 				(unknown.length
 					? `. Value unknown for ${unknown.join(", ")} (not redacted in this session).`
-					: ""),
+					: "") +
+				placeholderContext(input),
 			unknown.length ? [WRITE_PLACEHOLDERS, BLOCK] : [WRITE_PLAIN, WRITE_PLACEHOLDERS, BLOCK],
 		);
 		if (choice === WRITE_PLACEHOLDERS) return undefined;
