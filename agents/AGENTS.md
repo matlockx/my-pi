@@ -21,6 +21,7 @@ When unsure, **ask the developer** before making changes.
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
 | G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
+| G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 
 ## Asking the User (HARD RULE)
 
@@ -344,6 +345,37 @@ References: payment-service `internal/service/payment/service.go` (`init`), orde
 `internal/event/order.go` (`init`), financial-aggregation-service `InitMetrics` in
 `internal/consumer`, `internal/handler`, `internal/service`, called from `consumers.go` and
 `jobs.go`.
+
+### Metric changes reach their dashboards and alerts
+
+Alerts and dashboards read metrics by name and label, often from another repository. A renamed
+metric or dropped label leaves the panel empty and the alert silent; nothing fails in the service's
+own tests. Apply the following directly, without asking, whenever code changes an existing metric
+instrument (counter, gauge, up-down counter, histogram, summary, timer, meter):
+
+- **What counts as a change**: rename, removal, type change, unit change, histogram bucket change,
+  a label added, removed, or renamed, a label value renamed, and an increment site added, moved, or
+  removed (the series keeps its name but counts something else). A new metric is not a change.
+- **Search before the edit, at least memory**: `memory_recall` with the metric name, its labels,
+  and the service name, across all projects. Memory is the only record of dashboards and alerts
+  built by hand in a UI, which no grep finds.
+- **Then grep every consumer location** for the metric name (also without the `_total`,
+  `_bucket`, `_count`, `_sum`, `_seconds` suffixes) and for each changed label name:
+  - `intl-stardust-gitops`: `infrastructure/modules/elastic-alerting` (ES|QL rules, SLOs, ML jobs),
+    `infrastructure/modules/elastic-dashboards`, `docs/runbooks`. Elastic stores metrics as
+    `metrics.<name>` and labels as `attributes.<label>`.
+  - The service repository itself: Grafana JSON, `PrometheusRule`, Datadog monitors, recording
+    rules, README.
+  - A project with an unknown backend (Grafana, Datadog, other): ask where its alerts and
+    dashboards live, then save the answer with `memory_save`.
+- **Hit**: update the consumer in the same task (multi-repo rules G-8 and G-10 apply), or keep
+  emitting the old name or label until the consumer is migrated. Never leave a consumer pointing at
+  a series the code no longer emits. While older data still holds the field, the query runs and
+  returns nothing, so the alert stays silent; once retention drops it, ES|QL fails with `Unknown
+  column`.
+- **Report**: the work summary lists each changed metric with its consumers as `file:line`, or the
+  locations searched when there are none. A failed `git fetch` of a consumer repository is stated,
+  since the hit list may then be stale.
 
 ### Adversarial matrix
 

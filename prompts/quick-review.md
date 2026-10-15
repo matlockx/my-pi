@@ -131,7 +131,10 @@ version left unbumped. Generated output under `gen/` not regenerated and committ
 IDL. A new decision record missing from the `docs/bdr` index, a new business rule with no record,
 rule text edited in place instead of superseded, a draft record implemented without being
 promoted, or a `DEV-NOTE:` pointing at a record that does not exist in this checkout. A commit
-message or PR title describing a different change from the one in the diff.
+message or PR title describing a different change from the one in the diff. A metric renamed,
+re-labelled, retyped, or removed while an alert, dashboard, or runbook still reads the old name or
+label (Elastic: `metrics.<name>`, `attributes.<label>` in `intl-stardust-gitops`), with no
+consumer list in the summary (AGENTS.md G-16).
 
 **Cross-service changes shipped one-sided.** A new request or event field added by the producer
 with no evidence the peer accepts and persists it. Unknown JSON is ignored silently, so the flow
