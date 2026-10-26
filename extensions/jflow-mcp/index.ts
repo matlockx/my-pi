@@ -32,12 +32,20 @@
  * PR watcher: after a successful `pr` or `review_resolve` call, a detached
  * loop polls jflow's review_status tool every 30 s (watch.mjs). Open review
  * threads come back to the agent as a follow-up prompt (at most MAX_ROUNDS
- * per PR and session); any other outcome is a notification. `/jflow-merge on`
- * makes the watcher go on once Copilot is done: jflow asks the default Teams
+ * per PR and session); any other outcome is a notification. In merge mode
+ * the watcher goes on once Copilot is done: jflow asks the default Teams
  * coworker for a review, reminds hourly and merges on a coworker's approval.
- * While it is on, `pr` calls get `no_notify` (unless the agent names a
- * coworker), so the coworker is only asked once Copilot has finished. Off by
- * default, never persisted; turning it off stops merging at the next check.
+ * In merge mode `pr` calls get `no_notify` (unless the agent names a
+ * coworker), so the coworker is only asked once Copilot has finished. Merge
+ * mode follows auto-approve's default: on for Stardust repos, off elsewhere.
+ * `/jflow-merge on|off` overrides it for the session (never persisted);
+ * turning it off stops merging at the next check.
+ *
+ * Watcher state: the footer shows `jflow #<pr>: <state> → <next step>` while a
+ * watcher runs and `watcher stopped (<state>)` after it ended. `/jflow-watch`
+ * and the read-only tool `jflow_watch_status` print the full state per repo:
+ * running or stopped, merge mode, current state, next step, last check, fix
+ * rounds and time left.
  */
 
 import { execFile } from "node:child_process";
@@ -47,7 +55,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
 import { agentMergeBlocked, inputApprovesJflow, isAutoRemote, statusText } from "./intent.mjs";
-import { COPILOT_TIMEOUT_MS, MERGE_TIMEOUT_MS, nextStep, parseStatus, watchPR } from "./watch.mjs";
+import { COPILOT_TIMEOUT_MS, describeWatch, MERGE_TIMEOUT_MS, nextStep, parseStatus, watchFooter, watchPR } from "./watch.mjs";
 
 const COMMAND = "jflow";
 const URL_ENV = "JFLOW_MCP_URL";
@@ -56,6 +64,23 @@ const START_TIMEOUT_MS = 10_000;
 // Unknown (new) tools fail closed and need confirmation.
 // peer_review only reads the PR; peer_review_submit posts to GitHub and stays gated.
 const READ_ONLY = new Set(["list_epics", "peer_review"]);
+
+/** Last known state of a PR watcher, see describeWatch in watch.mjs. Times are epoch ms. */
+type WatchState = {
+	repo: string;
+	pr?: number;
+	merge: boolean;
+	running: boolean;
+	status?: string;
+	detail?: string;
+	error?: string;
+	handedToAgent?: boolean;
+	rounds: number;
+	startedAt: number;
+	lastCheckAt?: number;
+	deadline: number;
+};
+
 // Tools after which Copilot reviews again, so the watcher (re)starts.
 const WATCH_AFTER: Record<string, true> = { pr: true, review_resolve: true };
 
@@ -121,24 +146,50 @@ export default function (pi: ExtensionAPI) {
 	const watchers = new Map<string, AbortController>();
 	// Fix rounds handed to the agent, per `<repo>#<pr>`.
 	const rounds = new Map<string, number>();
-	let mergeOnApproval = false;
+	// End of the merge-mode budget per repo, kept across review_resolve restarts so fix rounds share one budget.
+	const mergeDeadlines = new Map<string, number>();
+	// Last known state of the watcher per repo, kept after it stops so /jflow-watch and jflow_watch_status can report it.
+	const watchStates = new Map<string, WatchState>();
+	// mergeOverride: explicit /jflow-merge choice; undefined = per-repo default (Stardust origin, as auto-approve).
+	let mergeOverride: boolean | undefined;
+	const mergeOn = async (repo: string) => mergeOverride ?? (await isAutoRepo(repo));
 
 	function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error") {
-		if (ctx.hasUI) ctx.ui.notify(text, level);
+		if (!ctx.hasUI) return;
+		// DEV-NOTE: pi renders info notices dim grey; watcher outcomes (merged, clean, state) need to stand out, so
+		// they get the theme's yellow without becoming a "Warning:".
+		const shown = level === "info" ? text.split("\n").map((line) => ctx.ui.theme.fg("warning", line)).join("\n") : text;
+		ctx.ui.notify(shown, level);
 	}
 
-	function startWatch(ctx: ExtensionContext, repo: string, prArg: unknown) {
+	function renderWatches(): string {
+		if (watchStates.size === 0) return "No jflow PR watcher has run in this session.";
+		return [...watchStates.values()].map((w) => describeWatch(w)).join("\n\n");
+	}
+
+	// fresh starts a new merge budget: a new PR or an explicit /jflow-merge on; review_resolve keeps the running one.
+	function startWatch(ctx: ExtensionContext, repo: string, prArg: unknown, merging: boolean, fresh: boolean) {
+		if (fresh || !mergeDeadlines.has(repo)) mergeDeadlines.set(repo, Date.now() + MERGE_TIMEOUT_MS);
 		watchers.get(repo)?.abort(new Error("replaced by a newer watcher"));
 		const ac = new AbortController();
 		watchers.set(repo, ac);
 		let pr = typeof prArg === "number" && prArg > 0 ? prArg : undefined;
-		const setStatus = (text?: string) => {
-			if (ctx.hasUI) ctx.ui.setStatus("jflow-watch", text);
+		const timeoutMs = merging ? Math.max(0, (mergeDeadlines.get(repo) ?? 0) - Date.now()) : COPILOT_TIMEOUT_MS;
+		const state: WatchState = {
+			repo, pr, merge: merging, running: true, rounds: rounds.get(`${repo}#${pr}`) ?? 0,
+			startedAt: Date.now(), deadline: Date.now() + timeoutMs,
 		};
+		watchStates.set(repo, state);
+		const showWatch = () => {
+			// A replaced watcher must not overwrite the footer of its successor.
+			if (ctx.hasUI && watchers.get(repo) === ac) ctx.ui.setStatus("jflow-watch", watchFooter(state));
+		};
+		showWatch();
 		const check = async () => {
 			const c = await connect(ctx.cwd);
-			// mergeOnApproval is read per check, so /jflow-merge off stops merging right away.
-			const result = await c.callTool("review_status", { path: repo, ...(pr ? { pr } : {}), merge: mergeOnApproval });
+			// Merge mode is read per check, so /jflow-merge off stops merging right away.
+			state.merge = await mergeOn(repo);
+			const result = await c.callTool("review_status", { path: repo, ...(pr ? { pr } : {}), merge: state.merge });
 			const text = resultText(result);
 			if (result?.isError) throw new Error(text.split("\n").at(-1)?.replace(/^Error: /, "") || "review_status failed");
 			const status = parseStatus(text);
@@ -149,28 +200,46 @@ export default function (pi: ExtensionAPI) {
 
 		watchPR({
 			check,
-			timeoutMs: mergeOnApproval ? MERGE_TIMEOUT_MS : COPILOT_TIMEOUT_MS,
+			timeoutMs,
 			signal: ac.signal,
-			onStatus: (s) => setStatus(`PR #${s.pr}: ${s.status.replaceAll("_", " ")}`),
+			onStatus: (s) => {
+				Object.assign(state, {
+					pr: s.pr, status: s.status, detail: s.detail, error: undefined, lastCheckAt: Date.now(),
+					rounds: rounds.get(`${repo}#${s.pr}`) ?? 0,
+				});
+				showWatch();
+			},
+			onError: (err: Error, failures: number) => {
+				Object.assign(state, { error: `${err.message} (${failures} failed check(s) in a row)`, lastCheckAt: Date.now() });
+				showWatch();
+			},
 		})
 			.then((status) => {
+				// A watcher replaced while its last check was in flight must not prompt or notify.
+				if (ac.signal.aborted) return;
 				const key = `${repo}#${status.pr}`;
 				const done = rounds.get(key) ?? 0;
 				const step = nextStep(status, { repo, rounds: done });
-				if (status.status === "merged" || status.status === "closed") rounds.delete(key);
+				Object.assign(state, { running: false, status: status.status, detail: status.detail, handedToAgent: !!step.prompt });
+				if (status.status === "merged" || status.status === "closed") {
+					rounds.delete(key);
+					mergeDeadlines.delete(repo);
+				}
 				if (!step.prompt) return notify(ctx, step.notify, step.level);
 				rounds.set(key, done + 1);
+				state.rounds = done + 1;
 				// DEV-NOTE: the watch ran detached, so the loop may be idle (message starts a turn)
 				// or busy with the next user request (message queues as its follow-up).
 				pi.sendUserMessage(step.prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 			})
 			.catch((err: Error) => {
-				if (!ac.signal.aborted) notify(ctx, `jflow watcher stopped: ${err.message}`, "warning");
+				if (ac.signal.aborted) return;
+				Object.assign(state, { running: false, error: err.message });
+				notify(ctx, `jflow watcher stopped: ${err.message}`, "warning");
 			})
 			.finally(() => {
-				if (watchers.get(repo) !== ac) return;
-				watchers.delete(repo);
-				setStatus(undefined);
+				showWatch();
+				if (watchers.get(repo) === ac) watchers.delete(repo);
 			});
 	}
 
@@ -201,13 +270,14 @@ export default function (pi: ExtensionAPI) {
 					const args = { ...params };
 					// Models sometimes pass relative or @-prefixed paths; jflow wants absolute.
 					if (typeof args.path === "string") args.path = resolve(ctx.cwd, args.path.replace(/^@/, ""));
-					// With merge-on-approval the watcher asks the coworker once Copilot is done; a link now would be a second ping.
-					if (tool.name === "pr" && mergeOnApproval && !args.notify) args.no_notify = true;
-					if (agentMergeBlocked(tool.name, args, mergeOnApproval)) {
-						throw new Error("jflow review_status with merge is off — only the user turns it on, with /jflow-merge on");
+					const repo = typeof args.path === "string" ? args.path : ctx.cwd;
+					const merging = await mergeOn(repo);
+					// In merge mode the watcher asks the coworker once Copilot is done; a link now would be a second ping.
+					if (tool.name === "pr" && merging && !args.notify) args.no_notify = true;
+					if (agentMergeBlocked(tool.name, args, merging)) {
+						throw new Error("jflow review_status with merge is off for this repo — turn it on with /jflow-merge on");
 					}
 
-					const repo = typeof args.path === "string" ? args.path : ctx.cwd;
 					if (!READ_ONLY.has(tool.name) && !approvedByPrompt && !(auto ?? (await isAutoRepo(repo)))) {
 						if (!ctx.hasUI) throw new Error(`jflow ${tool.name} blocked — no UI available for confirmation`);
 						const ok = await ctx.ui.confirm(
@@ -230,11 +300,28 @@ export default function (pi: ExtensionAPI) {
 					const result = await abortable(c.callTool(tool.name, args), signal);
 					const text = resultText(result);
 					if (result?.isError) throw new Error(text || `jflow ${tool.name} failed`);
-					if (WATCH_AFTER[tool.name]) startWatch(ctx, repo, args.pr);
+					if (WATCH_AFTER[tool.name]) startWatch(ctx, repo, args.pr, merging, tool.name === "pr");
 					return { content: [{ type: "text", text }], details: {} };
 				},
 			});
 		}
+	});
+
+	pi.registerTool({
+		name: `${PREFIX}watch_status`,
+		label: "jflow watch status",
+		description:
+			"Show the PR watchers of this session: whether each is running, merge on approval, the current PR state, " +
+			"the next step, fix rounds used and the time left. Read-only; use it to check that a watcher is following a PR.",
+		parameters: Type.Object({}),
+		async execute() {
+			return { content: [{ type: "text", text: renderWatches() }], details: {} };
+		},
+	});
+
+	pi.registerCommand("jflow-watch", {
+		description: "Show the PR watchers: running or stopped, current state, next step",
+		handler: async (_args, ctx) => notify(ctx, renderWatches(), "info"),
 	});
 
 	// Each user prompt resets the approval, so it never outlives the request that gave it.
@@ -261,11 +348,13 @@ export default function (pi: ExtensionAPI) {
 		description: "After Copilot: ask the Teams coworker, remind hourly, merge the PR on approval (on|off|status)",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
-			if (arg === "on" || arg === "off") mergeOnApproval = arg === "on";
-			else if (arg !== "status") mergeOnApproval = !mergeOnApproval;
+			if (arg === "on" || arg === "off") mergeOverride = arg === "on";
+			else if (arg !== "status") mergeOverride = !(mergeOverride ?? cwdAuto);
+			const on = mergeOverride ?? cwdAuto;
 			// Turning it on (re)starts the watcher for the current branch's PR, with the longer merge budget.
-			if (mergeOnApproval && arg !== "status") startWatch(ctx, ctx.cwd, undefined);
-			notify(ctx, `jflow merge on approval ${mergeOnApproval ? "on — watching the PR of the current branch" : "off"}`, "info");
+			if (on && arg !== "status") startWatch(ctx, ctx.cwd, undefined, true, true);
+			const why = mergeOverride === undefined ? " (default for this repo)" : "";
+			notify(ctx, `jflow merge on approval ${on ? "on" : "off"}${why}${on && arg !== "status" ? " — watching the PR of the current branch" : ""}`, "info");
 		},
 	});
 
@@ -273,7 +362,9 @@ export default function (pi: ExtensionAPI) {
 		for (const ac of watchers.values()) ac.abort(new Error("session ended"));
 		watchers.clear();
 		rounds.clear();
-		mergeOnApproval = false;
+		watchStates.clear();
+		mergeDeadlines.clear();
+		mergeOverride = undefined;
 		client?.close();
 		client = undefined;
 		auto = undefined; // an override never carries into another session
