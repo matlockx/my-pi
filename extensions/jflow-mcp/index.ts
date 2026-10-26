@@ -28,15 +28,26 @@
  * In HTTP mode this is UX, not a security boundary: the server has no auth,
  * so anything in the sandbox that can reach the port (the agent's bash too)
  * can call it directly.
+ *
+ * PR watcher: after a successful `pr` or `review_resolve` call, a detached
+ * loop polls jflow's review_status tool every 30 s (watch.mjs). Open review
+ * threads come back to the agent as a follow-up prompt (at most MAX_ROUNDS
+ * per PR and session); any other outcome is a notification. `/jflow-merge on`
+ * makes the watcher go on once Copilot is done: jflow asks the default Teams
+ * coworker for a review, reminds hourly and merges on a coworker's approval.
+ * While it is on, `pr` calls get `no_notify` (unless the agent names a
+ * coworker), so the coworker is only asked once Copilot has finished. Off by
+ * default, never persisted; turning it off stops merging at the next check.
  */
 
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
-import { inputApprovesJflow, isAutoRemote, statusText } from "./intent.mjs";
+import { agentMergeBlocked, inputApprovesJflow, isAutoRemote, statusText } from "./intent.mjs";
+import { COPILOT_TIMEOUT_MS, MERGE_TIMEOUT_MS, nextStep, parseStatus, watchPR } from "./watch.mjs";
 
 const COMMAND = "jflow";
 const URL_ENV = "JFLOW_MCP_URL";
@@ -45,6 +56,8 @@ const START_TIMEOUT_MS = 10_000;
 // Unknown (new) tools fail closed and need confirmation.
 // peer_review only reads the PR; peer_review_submit posts to GitHub and stays gated.
 const READ_ONLY = new Set(["list_epics", "peer_review"]);
+// Tools after which Copilot reviews again, so the watcher (re)starts.
+const WATCH_AFTER: Record<string, true> = { pr: true, review_resolve: true };
 
 const execFileP = promisify(execFile);
 
@@ -104,6 +117,63 @@ export default function (pi: ExtensionAPI) {
 		return connecting;
 	}
 
+	// One watcher per repository: a later pr/review_resolve there replaces it.
+	const watchers = new Map<string, AbortController>();
+	// Fix rounds handed to the agent, per `<repo>#<pr>`.
+	const rounds = new Map<string, number>();
+	let mergeOnApproval = false;
+
+	function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error") {
+		if (ctx.hasUI) ctx.ui.notify(text, level);
+	}
+
+	function startWatch(ctx: ExtensionContext, repo: string, prArg: unknown) {
+		watchers.get(repo)?.abort(new Error("replaced by a newer watcher"));
+		const ac = new AbortController();
+		watchers.set(repo, ac);
+		let pr = typeof prArg === "number" && prArg > 0 ? prArg : undefined;
+		const setStatus = (text?: string) => {
+			if (ctx.hasUI) ctx.ui.setStatus("jflow-watch", text);
+		};
+		const check = async () => {
+			const c = await connect(ctx.cwd);
+			// mergeOnApproval is read per check, so /jflow-merge off stops merging right away.
+			const result = await c.callTool("review_status", { path: repo, ...(pr ? { pr } : {}), merge: mergeOnApproval });
+			const text = resultText(result);
+			if (result?.isError) throw new Error(text.split("\n").at(-1)?.replace(/^Error: /, "") || "review_status failed");
+			const status = parseStatus(text);
+			// DEV-NOTE: pinned after the first check, so a branch switch by the agent does not move the watch to another PR.
+			pr ??= status.pr;
+			return status;
+		};
+
+		watchPR({
+			check,
+			timeoutMs: mergeOnApproval ? MERGE_TIMEOUT_MS : COPILOT_TIMEOUT_MS,
+			signal: ac.signal,
+			onStatus: (s) => setStatus(`PR #${s.pr}: ${s.status.replaceAll("_", " ")}`),
+		})
+			.then((status) => {
+				const key = `${repo}#${status.pr}`;
+				const done = rounds.get(key) ?? 0;
+				const step = nextStep(status, { repo, rounds: done });
+				if (status.status === "merged" || status.status === "closed") rounds.delete(key);
+				if (!step.prompt) return notify(ctx, step.notify, step.level);
+				rounds.set(key, done + 1);
+				// DEV-NOTE: the watch ran detached, so the loop may be idle (message starts a turn)
+				// or busy with the next user request (message queues as its follow-up).
+				pi.sendUserMessage(step.prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			})
+			.catch((err: Error) => {
+				if (!ac.signal.aborted) notify(ctx, `jflow watcher stopped: ${err.message}`, "warning");
+			})
+			.finally(() => {
+				if (watchers.get(repo) !== ac) return;
+				watchers.delete(repo);
+				setStatus(undefined);
+			});
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		cwdAuto = await isAutoRepo(ctx.cwd);
 		let tools: McpTool[];
@@ -131,6 +201,11 @@ export default function (pi: ExtensionAPI) {
 					const args = { ...params };
 					// Models sometimes pass relative or @-prefixed paths; jflow wants absolute.
 					if (typeof args.path === "string") args.path = resolve(ctx.cwd, args.path.replace(/^@/, ""));
+					// With merge-on-approval the watcher asks the coworker once Copilot is done; a link now would be a second ping.
+					if (tool.name === "pr" && mergeOnApproval && !args.notify) args.no_notify = true;
+					if (agentMergeBlocked(tool.name, args, mergeOnApproval)) {
+						throw new Error("jflow review_status with merge is off — only the user turns it on, with /jflow-merge on");
+					}
 
 					const repo = typeof args.path === "string" ? args.path : ctx.cwd;
 					if (!READ_ONLY.has(tool.name) && !approvedByPrompt && !(auto ?? (await isAutoRepo(repo)))) {
@@ -155,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await abortable(c.callTool(tool.name, args), signal);
 					const text = resultText(result);
 					if (result?.isError) throw new Error(text || `jflow ${tool.name} failed`);
+					if (WATCH_AFTER[tool.name]) startWatch(ctx, repo, args.pr);
 					return { content: [{ type: "text", text }], details: {} };
 				},
 			});
@@ -181,7 +257,23 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("jflow-merge", {
+		description: "After Copilot: ask the Teams coworker, remind hourly, merge the PR on approval (on|off|status)",
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (arg === "on" || arg === "off") mergeOnApproval = arg === "on";
+			else if (arg !== "status") mergeOnApproval = !mergeOnApproval;
+			// Turning it on (re)starts the watcher for the current branch's PR, with the longer merge budget.
+			if (mergeOnApproval && arg !== "status") startWatch(ctx, ctx.cwd, undefined);
+			notify(ctx, `jflow merge on approval ${mergeOnApproval ? "on — watching the PR of the current branch" : "off"}`, "info");
+		},
+	});
+
 	pi.on("session_shutdown", async () => {
+		for (const ac of watchers.values()) ac.abort(new Error("session ended"));
+		watchers.clear();
+		rounds.clear();
+		mergeOnApproval = false;
 		client?.close();
 		client = undefined;
 		auto = undefined; // an override never carries into another session

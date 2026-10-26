@@ -16,6 +16,14 @@ export function isAutoRemote(url) {
 }
 
 /**
+ * True when an agent call asks review_status to merge while /jflow-merge is
+ * off: only the user turns merging on, never the agent.
+ */
+export function agentMergeBlocked(toolName, args, mergeOn) {
+	return toolName === "review_status" && Boolean(args?.merge) && !mergeOn;
+}
+
+/**
  * Footer status: transport, whether the server answered, and auto-approve.
  * undefined (no status) when stdio jflow is simply not installed.
  */
