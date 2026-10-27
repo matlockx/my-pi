@@ -2,11 +2,36 @@ import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { MemoryStorage } from "./storage";
 import { MEMORY_PROTOCOL } from "./protocol";
+import { exportShared, importShared, loadShareConfig, shareConfigPath, type ImportResult } from "./share";
+
+function describeImport(r: ImportResult): string[] {
+	const parts: string[] = [];
+	if (r.changed) parts.push(`${r.changed} imported or updated`);
+	if (r.removed) parts.push(`${r.removed} removed`);
+	if (r.invalid.length) parts.push(`unreadable, skipped: ${r.invalid.join(", ")}`);
+	if (r.missing.length) parts.push(`checkout missing, removals paused: ${r.missing.join(", ")}`);
+	return parts;
+}
 
 /**
- * Register lifecycle hooks for auto-context injection and session summaries.
+ * Register lifecycle hooks for shared repository import, auto-context injection and session summaries.
  */
 export function registerHooks(pi: ExtensionAPI, storage: MemoryStorage): void {
+	// --- Import shared repositories at session start ---
+	pi.on("session_start", async (_event, ctx) => {
+		try {
+			const repos = loadShareConfig();
+			if (!repos) return;
+			const result = importShared(storage, repos);
+			const parts = describeImport(result);
+			if (parts.length === 0) return;
+			const level = result.invalid.length || result.missing.length ? "warning" : "info";
+			ctx.ui.notify(`Shared memory: ${parts.join("; ")}`, level);
+		} catch (error) {
+			ctx.ui.notify(`Shared memory: ${(error as Error).message}`, "error");
+		}
+	});
+
 	// --- Inject relevant memories + protocol into system prompt before each agent turn ---
 	pi.on("before_agent_start", async (event, ctx) => {
 		const project = basename(ctx.cwd);
@@ -78,16 +103,12 @@ export function registerHooks(pi: ExtensionAPI, storage: MemoryStorage): void {
 				}
 			}
 
-			// Last assistant message for summary
+			// Last assistant message for summary; assistant content is always a block array.
 			if (msg.role === "assistant") {
-				if (typeof msg.content === "string") {
-					lastAssistantSnippet = msg.content.slice(0, 300);
-				} else if (Array.isArray(msg.content)) {
-					for (const block of msg.content) {
-						if (block.type === "text" && block.text) {
-							lastAssistantSnippet = block.text.slice(0, 300);
-							break;
-						}
+				for (const block of msg.content) {
+					if (block.type === "text" && block.text) {
+						lastAssistantSnippet = block.text.slice(0, 300);
+						break;
 					}
 				}
 			}
@@ -125,7 +146,7 @@ export function registerHooks(pi: ExtensionAPI, storage: MemoryStorage): void {
 }
 
 /**
- * Register user-facing commands: /remember and /recall.
+ * Register user-facing commands: /remember, /recall and /memory-share.
  */
 export function registerCommands(
 	pi: ExtensionAPI,
@@ -180,6 +201,41 @@ export function registerCommands(
 				`${results.length} memor${results.length === 1 ? "y" : "ies"} found:\n${lines.join("\n")}`,
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("memory-share", {
+		description: "Import shared memories, then write local ones to the shared repositories (~/.pi/memory/shared.json)",
+		handler: async (_args, ctx) => {
+			let repos;
+			try {
+				repos = loadShareConfig();
+			} catch (error) {
+				ctx.ui.notify((error as Error).message, "error");
+				return;
+			}
+			if (!repos) {
+				ctx.ui.notify(
+					`No ${shareConfigPath()}; expected [{ "repo": "~/path/to/checkout", "projects": ["project-name"] }]`,
+					"warning",
+				);
+				return;
+			}
+
+			try {
+				const imported = importShared(storage, repos);
+				const exported = exportShared(storage, repos);
+				const parts = describeImport(imported);
+				parts.push(`${exported.written} written for review`);
+				if (exported.withheld.length)
+					parts.push(`withheld, secret found (forget and save a clean copy): ${exported.withheld.join(", ")}`);
+				if (exported.missing.length) parts.push(`export skipped, checkout missing: ${exported.missing.join(", ")}`);
+				const warn =
+					imported.invalid.length || imported.missing.length || exported.withheld.length || exported.missing.length;
+				ctx.ui.notify(`Shared memory: ${parts.join("; ")}`, warn ? "warning" : "info");
+			} catch (error) {
+				ctx.ui.notify(`Shared memory: ${(error as Error).message}`, "error");
+			}
 		},
 	});
 }

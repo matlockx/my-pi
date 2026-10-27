@@ -34,9 +34,16 @@ export interface Memory {
 	project: string;
 	created_at: string;
 	session_id: string | null;
+	/** `local` for memories saved on this machine, `shared` for memories imported from a shared repository. */
+	origin: "local" | "shared";
+	/** ISO timestamp of the first export to a shared repository; null for memories never exported. */
+	exported_at: string | null;
 }
 
-export type MemoryInput = Omit<Memory, "id" | "created_at">;
+export type MemoryInput = Omit<Memory, "id" | "created_at" | "origin" | "exported_at">;
+
+/** The fields a shared repository file carries. */
+export type SharedMemory = Pick<Memory, "id" | "content" | "type" | "concepts" | "files" | "project" | "created_at">;
 
 const MEMORY_DIR = join(process.env.HOME ?? "~", ".pi", "memory");
 const DB_PATH = join(MEMORY_DIR, "memories.db");
@@ -86,6 +93,20 @@ export class MemoryStorage {
 		this.db = openDatabase(DB_PATH);
 		this.db.exec("PRAGMA journal_mode = WAL");
 		this.db.exec(SCHEMA);
+		this.addColumn("origin", "TEXT NOT NULL DEFAULT 'local'");
+		this.addColumn("exported_at", "TEXT");
+	}
+
+	// DEV-NOTE: databases created before shared repositories lack these columns; pi and
+	// omp may open the same file at once, so a concurrent ADD COLUMN is tolerated.
+	private addColumn(name: string, definition: string): void {
+		const columns = this.db.prepare("PRAGMA table_info(memories)").all() as { name: string }[];
+		if (columns.some((c) => c.name === name)) return;
+		try {
+			this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
+		} catch (error) {
+			if (!/duplicate column/i.test((error as Error).message)) throw error;
+		}
 	}
 
 	save(input: MemoryInput): string {
@@ -133,6 +154,59 @@ export class MemoryStorage {
 		return this.db
 			.prepare("SELECT * FROM memories WHERE project = ? ORDER BY created_at DESC LIMIT ?")
 			.all(project, limit) as Memory[];
+	}
+
+	get(id: string): Memory | undefined {
+		return this.db.prepare("SELECT * FROM memories WHERE id = ?").all(id)[0] as Memory | undefined;
+	}
+
+	/** Local memories of the given projects never exported, oldest first, excluding the given types. */
+	pendingExport(projects: string[], excludedTypes: string[]): Memory[] {
+		// SQLite accepts an empty IN () list.
+		return this.db
+			.prepare(
+				`SELECT * FROM memories
+				 WHERE origin = 'local' AND exported_at IS NULL
+				   AND project IN (${projects.map(() => "?").join(",")})
+				   AND type NOT IN (${excludedTypes.map(() => "?").join(",")})
+				 ORDER BY created_at`,
+			)
+			.all(...projects, ...excludedTypes) as Memory[];
+	}
+
+	markExported(id: string, at: string): void {
+		this.db.prepare("UPDATE memories SET exported_at = ? WHERE id = ?").run(at, id);
+	}
+
+	/**
+	 * Inserts a memory read from a shared repository, or updates an earlier import of it.
+	 * A local memory with the same id is left unchanged. Returns 1 when a row was written.
+	 */
+	upsertShared(m: SharedMemory): number {
+		return this.db
+			.prepare(
+				`INSERT INTO memories (id, content, type, concepts, files, project, created_at, session_id, origin)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'shared')
+				 ON CONFLICT(id) DO UPDATE SET
+				   content = excluded.content, type = excluded.type, concepts = excluded.concepts,
+				   files = excluded.files, project = excluded.project, created_at = excluded.created_at
+				 WHERE memories.origin = 'shared' AND (
+				   memories.content IS NOT excluded.content OR memories.type IS NOT excluded.type OR
+				   memories.concepts IS NOT excluded.concepts OR memories.files IS NOT excluded.files OR
+				   memories.project IS NOT excluded.project OR memories.created_at IS NOT excluded.created_at)
+				 RETURNING id`,
+			)
+			// DEV-NOTE: bun:sqlite's run().changes counts the FTS trigger writes too; RETURNING
+			// yields exactly the rows this statement wrote on both drivers.
+			.all(m.id, m.content, m.type, m.concepts, m.files, m.project, m.created_at).length;
+	}
+
+	/** Deletes imported memories whose id is not in `keep`. Returns the number deleted. */
+	removeSharedExcept(keep: Set<string>): number {
+		const ids = this.db.prepare("SELECT id FROM memories WHERE origin = 'shared'").all() as { id: string }[];
+		let removed = 0;
+		for (const { id } of ids) if (!keep.has(id) && this.delete(id)) removed++;
+		return removed;
 	}
 
 	delete(id: string): boolean {

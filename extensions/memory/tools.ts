@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { MemoryStorage } from "./storage";
+import { loadShareConfig, removeSharedFile } from "./share";
 
 export function registerTools(pi: ExtensionAPI, storage: MemoryStorage): void {
 	pi.registerTool({
@@ -140,8 +141,21 @@ export function registerTools(pi: ExtensionAPI, storage: MemoryStorage): void {
 				Type.String({ description: "Reason for deletion" }),
 			),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const memory = storage.get(params.id);
 			const deleted = storage.delete(params.id);
+
+			// DEV-NOTE: an imported memory whose file stays in the shared repository is imported
+			// again at the next session start, so its file goes too.
+			let shareNote = "";
+			if (memory && (memory.origin === "shared" || memory.exported_at)) {
+				try {
+					const removed = removeSharedFile(loadShareConfig() ?? [], memory);
+					if (removed) shareNote = ` Deleted its shared repository file; commit that deletion.`;
+				} catch (error) {
+					shareNote = ` Shared repository file not deleted: ${(error as Error).message}`;
+				}
+			}
 
 			ctx.ui.notify(
 				deleted ? `🗑️ Memory deleted: ${params.id}` : `⚠️ Memory ${params.id} not found`,
@@ -153,7 +167,7 @@ export function registerTools(pi: ExtensionAPI, storage: MemoryStorage): void {
 					{
 						type: "text" as const,
 						text: deleted
-							? `Deleted memory ${params.id}.${params.reason ? ` Reason: ${params.reason}` : ""}`
+							? `Deleted memory ${params.id}.${params.reason ? ` Reason: ${params.reason}` : ""}${shareNote}`
 							: `Memory ${params.id} not found.`,
 					},
 				],
