@@ -41,8 +41,8 @@
  * `/jflow-merge on|off` overrides it for the session (never persisted);
  * turning it off stops merging at the next check.
  *
- * Watcher state: the footer shows `jflow #<pr>: <state> → <next step>` while a
- * watcher runs and `watcher stopped (<state>)` after it ended. `/jflow-watch`
+ * Watcher state: a line below the editor shows `jflow #<pr>: <state> → <next step>`
+ * while a watcher runs and `watcher stopped (<state>)` after it ended. `/jflow-watch`
  * and the read-only tool `jflow_watch_status` print the full state per repo:
  * running or stopped, merge mode, current state, next step, last check, fix
  * rounds and time left.
@@ -181,8 +181,11 @@ export default function (pi: ExtensionAPI) {
 		};
 		watchStates.set(repo, state);
 		const showWatch = () => {
-			// A replaced watcher must not overwrite the footer of its successor.
-			if (ctx.hasUI && watchers.get(repo) === ac) ctx.ui.setStatus("jflow-watch", watchFooter(state));
+			// DEV-NOTE: a widget, not setStatus: omp drops the whole extension-status segment of its status line when
+			// the terminal is too narrow for it, which hid the watcher. A replaced watcher must not overwrite its successor.
+			if (ctx.hasUI && watchers.get(repo) === ac) {
+				ctx.ui.setWidget("jflow-watch", [ctx.ui.theme.fg("accent", watchFooter(state))], { placement: "belowEditor" });
+			}
 		};
 		showWatch();
 		const check = async () => {
