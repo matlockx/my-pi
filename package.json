@@ -16,7 +16,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/index.ts",
+      "./extensions/setup/index.ts",
       "./extensions/context.ts",
       "./extensions/review/review.ts",
       "./extensions/quick-review/index.ts",

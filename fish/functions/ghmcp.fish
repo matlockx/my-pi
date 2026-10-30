@@ -1,12 +1,12 @@
 # GitHub MCP for omp sessions. Started from a host shell, never by the agent:
 # the omp side is only the `github` http entry in my-pi/mcp.json.
 #
-# Install:  ln -sf ~/projects/my-pi/mcp/github/ghmcp.fish ~/.config/fish/functions/ghmcp.fish
+# Loaded through my-pi/fish/conf.d/my-pi.fish; the my-pi setup extension checks the prerequisites.
 # Requires: brew install github-mcp-server; gh auth login; node >= 24.2.
 function ghmcp --description 'GitHub MCP (read-write) behind a token proxy on 127.0.0.1:8082'
     set -l port 8082
     set -l logfile ~/.local/state/ghmcp.log
-    set -l proxy (path dirname (path resolve (functions --details ghmcp)))/proxy.mjs
+    set -l proxy (path resolve (path dirname (path resolve (functions --details ghmcp)))/../../mcp/github/proxy.mjs)
     set -l listening (lsof -t -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null)
 
     switch "$argv[1]"
