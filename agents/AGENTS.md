@@ -22,6 +22,7 @@ When unsure, **ask the developer** before making changes.
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
 | G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
 | G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
+| G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
 
 ## Asking the User (HARD RULE)
 
