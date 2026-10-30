@@ -114,7 +114,7 @@ test("reports a user copy of a repo fish function, but not a link to the repo fi
 	assert.deepEqual(actions, []);
 });
 
-test("reports missing github-mcp-server, old or missing node, stale user github entry and stopped proxy", async (t) => {
+test("reports missing github-mcp-server, old or missing node, stale user github entry and stopped proxies", async (t) => {
 	const { repo, home } = fixture(t);
 	fs.writeFileSync(
 		join(home, ".omp/agent/mcp.json"),
@@ -128,11 +128,16 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 		portOpen: async () => false,
 	});
 
-	assert.equal(actions.length, 4);
+	assert.equal(actions.length, 5);
 	assert.equal(actions[0], "github-mcp-server not on PATH: brew install github-mcp-server");
 	assert.match(actions[1], /^node v24\.1\.9 is older than 24\.2 /);
 	assert.match(actions[2], /defines "github", which outranks my-pi\/mcp\.json: jq 'del\(\.mcpServers\.github\)' .* && chmod 600 .* && mv /);
 	assert.match(actions[3], /^GitHub MCP proxy not listening on 127\.0\.0\.1:8082: run ghmcp in a host terminal/);
+	assert.match(actions[4], /^Go module proxy not listening on 127\.0\.0\.1:8083 .*: run gomodproxy in a host terminal$/);
+
+	const onlyGoDown = await runChecks({ repo, home, ...healthy, portOpen: async (port) => port !== 8083 });
+	assert.equal(onlyGoDown.actions.length, 2, "github entry in user mcp.json plus the Go proxy");
+	assert.match(onlyGoDown.actions[1], /^Go module proxy not listening/);
 
 	const missingNode = await runChecks({ repo, home, run: async () => null, portOpen: async () => true });
 	assert.match(missingNode.actions[1], /^node not on PATH is older than 24\.2/);

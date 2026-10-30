@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 /** Lowest node version the GitHub MCP proxy runs on (import.meta.main). */
 export const MIN_NODE = [24, 2];
 export const GITHUB_MCP_PORT = 8082;
+export const GO_MODULE_PROXY_PORT = 8083;
 
 /**
  * Symlinks the repo owns. `optional` links are skipped when their parent
@@ -153,10 +154,11 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	}
 	actions.push(...checkFishCopies(repo, home));
 
-	const [mcpVersion, nodeVersion, proxyUp] = await Promise.all([
+	const [mcpVersion, nodeVersion, proxyUp, goProxyUp] = await Promise.all([
 		run("github-mcp-server", ["--version"]),
 		run("node", ["--version"]),
 		portOpen(GITHUB_MCP_PORT),
+		portOpen(GO_MODULE_PROXY_PORT),
 	]);
 	if (mcpVersion === null) actions.push("github-mcp-server not on PATH: brew install github-mcp-server");
 	const node = parseNodeVersion(nodeVersion);
@@ -175,6 +177,10 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	if (!proxyUp)
 		actions.push(
 			`GitHub MCP proxy not listening on 127.0.0.1:${GITHUB_MCP_PORT}: run ghmcp in a host terminal, then /mcp reconnect github`,
+		);
+	if (!goProxyUp)
+		actions.push(
+			`Go module proxy not listening on 127.0.0.1:${GO_MODULE_PROXY_PORT} (go get/build in the sandbox fails): run gomodproxy in a host terminal`,
 		);
 	return { fixed, actions };
 }
