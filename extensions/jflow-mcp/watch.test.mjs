@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { delay, describeWatch, MAX_FAILURES, MAX_ROUNDS, nextStep, parseStatus, watchFooter, watchPR } from "./watch.mjs";
+import { delay, describeWatch, MAX_FAILURES, MAX_ROUNDS, nextStep, notifiedMessage, parseStatus, watchFooter, watchPR } from "./watch.mjs";
 
 test("parseStatus reads the JSON on the last line, after jflow's log", () => {
 	const st = parseStatus('ℹ Teams: sent\n{"pr":42,"status":"awaiting_approval","done":false,"detail":"waiting"}\n');
@@ -78,11 +78,11 @@ test("describeWatch shows state, next step and budget of a running watcher", () 
 		[
 			"PR #118 in /r — watcher running, merge on approval on",
 			"current state: awaiting approval — waiting for oliver's approval",
-			"next step: wait for a coworker's approval; Teams reminder every hour",
+			"next step: wait for a coworker's approval; Teams reminder every 12 h",
 			"last check: 12 s ago · fix rounds: 3/10 · gives up in 7 h 12 min",
 		].join("\n"),
 	);
-	assert.equal(watchFooter(w), "jflow #118: awaiting approval → wait for a coworker's approval; Teams reminder every hour");
+	assert.equal(watchFooter(w), "jflow #118: awaiting approval → wait for a coworker's approval; Teams reminder every 12 h");
 });
 
 test("describeWatch tells a failing check and a stopped watcher apart", () => {
@@ -129,4 +129,13 @@ test("nextStep reports final states to the user", () => {
 	for (const s of ["changes_requested", "not_mergeable", "timeout", "closed"]) {
 		assert.equal(nextStep(st(s, true), { rounds: 0 }).level, "warning", s);
 	}
+});
+
+test("notifiedMessage reports a Teams message sent by the check, and nothing otherwise", () => {
+	const sent = { ...st("awaiting_approval", false, "waiting for olli's approval; sent the review request"), url: "https://gh/pr/42", notified: "olli" };
+	assert.equal(
+		notifiedMessage(sent),
+		"jflow watcher: PR #42 (https://gh/pr/42): sent a Teams message to olli — waiting for olli's approval; sent the review request",
+	);
+	assert.equal(notifiedMessage(st("awaiting_approval", false, "waiting for olli's approval (asked 9:00AM)")), undefined);
 });

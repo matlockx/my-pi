@@ -32,9 +32,10 @@
  * PR watcher: after a successful `pr` or `review_resolve` call, a detached
  * loop polls jflow's review_status tool every 30 s (watch.mjs). Open review
  * threads come back to the agent as a follow-up prompt (at most MAX_ROUNDS
- * per PR and session); any other outcome is a notification. In merge mode
- * the watcher goes on once Copilot is done: jflow asks the default Teams
- * coworker for a review, reminds hourly and merges on a coworker's approval.
+ * per PR and session); any other outcome is a notification. A check that
+ * sent a Teams review request or reminder tells the agent so in a message.
+ * In merge mode the watcher goes on once Copilot is done: jflow asks the default Teams
+ * coworker for a review, reminds every 12 h and merges on a coworker's approval.
  * In merge mode `pr` calls get `no_notify` (unless the agent names a
  * coworker), so the coworker is only asked once Copilot has finished. Merge
  * mode follows auto-approve's default: on for Stardust repos, off elsewhere.
@@ -55,7 +56,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { abortable, McpHttpClient, McpStdioClient, resultText } from "./client.mjs";
 import { agentMergeBlocked, inputApprovesJflow, isAutoRemote, statusText } from "./intent.mjs";
-import { COPILOT_TIMEOUT_MS, describeWatch, MERGE_TIMEOUT_MS, nextStep, parseStatus, watchFooter, watchPR } from "./watch.mjs";
+import { COPILOT_TIMEOUT_MS, describeWatch, MERGE_TIMEOUT_MS, nextStep, notifiedMessage, parseStatus, watchFooter, watchPR } from "./watch.mjs";
 
 const COMMAND = "jflow";
 const URL_ENV = "JFLOW_MCP_URL";
@@ -211,6 +212,10 @@ export default function (pi: ExtensionAPI) {
 					rounds: rounds.get(`${repo}#${s.pr}`) ?? 0,
 				});
 				showWatch();
+				const sent = notifiedMessage(s);
+				// DEV-NOTE: a custom message, not a user prompt: the agent learns who was asked without a turn of its own.
+				// followUp lands after a running turn; when idle it is appended for the next one.
+				if (sent && !ac.signal.aborted) pi.sendMessage({ customType: "jflow-watch", content: sent, display: true }, { deliverAs: "followUp" });
 			},
 			onError: (err: Error, failures: number) => {
 				Object.assign(state, { error: `${err.message} (${failures} failed check(s) in a row)`, lastCheckAt: Date.now() });
@@ -348,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("jflow-merge", {
-		description: "After Copilot: ask the Teams coworker, remind hourly, merge the PR on approval (on|off|status)",
+		description: "After Copilot: ask the Teams coworker, remind every 12 h, merge the PR on approval (on|off|status)",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
 			if (arg === "on" || arg === "off") mergeOverride = arg === "on";

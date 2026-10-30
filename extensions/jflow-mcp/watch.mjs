@@ -86,7 +86,7 @@ export async function watchPR({
 const NEXT_STEPS = {
 	copilot_pending: "wait for Copilot's review",
 	sonar_pending: "wait for SonarQube Cloud's analysis",
-	awaiting_approval: "wait for a coworker's approval; Teams reminder every hour",
+	awaiting_approval: "wait for a coworker's approval; Teams reminder every 12 h",
 	merge_ready: "merge the PR",
 	merge_blocked: "retry the merge on the next check",
 };
@@ -159,4 +159,15 @@ export function nextStep(status, { repo, rounds }) {
 	}
 	const level = status.status === "merged" || status.status === "clean" ? "info" : "warning";
 	return { notify: `jflow watcher: ${where}: ${status.detail ?? status.status}`, level };
+}
+
+/**
+ * The message telling the agent that a check sent a Teams message to a
+ * coworker (review request or reminder, see `notified` in review_status), or
+ * undefined when the check sent none.
+ */
+export function notifiedMessage(status) {
+	if (!status?.notified) return undefined;
+	const where = `PR #${status.pr}${status.url ? ` (${status.url})` : ""}`;
+	return `jflow watcher: ${where}: sent a Teams message to ${status.notified} — ${status.detail ?? status.status}`;
 }
