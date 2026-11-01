@@ -109,10 +109,10 @@ linters:
         - name: blank-imports
         - name: unexported-return
     godot: { scope: toplevel, period: true }
+  exclusions:
+    presets: [comments, std-error-handling, common-false-positives]
 formatters:
   enable: [gofumpt]
-exclusions:
-  presets: [comments, std-error-handling, common-false-positives]
 ```
 
 ## Preferred libraries
@@ -156,11 +156,14 @@ func TestADR006R2_OutboxRowCommitsWithTheOrder(t *testing.T) { ... }
 ID form in the name: `BDR`/`ADR` + 3-digit record + `R` + rule number, no separators. Subtests
 inherit coverage from the parent, so a table-driven test may cover one rule with many cases.
 
-Coverage check (wire into the repo check script; blocking):
+Coverage check (wire into the repo check script; blocking). Records declare rules as
+`- **BDR-016-R1** — …`; both commands print IDs in the test-name form (`BDR016R1`):
 
 ```bash
-rg -o '^\*\*R[0-9]+' -r '' docs/bdr/*.md   # rules declared
-rg -o 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go  # rules covered
+rg -o --no-filename --no-messages '\*\*(BDR|ADR)-[0-9]{3}-R[0-9]+\*\*' docs/bdr docs/adr | tr -d '*-' | sort -u > /tmp/declared
+rg -o --no-filename 'func Test(BDR|ADR)[0-9]{3}R[0-9]+' --type go | sed 's/^func Test//' | sort -u > /tmp/covered
+missing=$(comm -23 /tmp/declared /tmp/covered)   # rules without a test
+test -z "$missing" || { echo "rules without a test: $missing"; exit 1; }
 ```
 
 #### Test layers
@@ -173,6 +176,20 @@ rg -o 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go  # rules covered
 
 A peer returning a generic wrapper (echo/startup turns a route miss into `404` with code
 `Internal`) means status alone never classifies an error — assert on status **and** code.
+
+#### Writing tests
+
+- Test first: write the failing test, run it and watch it fail for the expected reason, implement
+  until it passes, then refactor with the test green.
+- Table-driven tests with `t.Run(tt.name, …)` for several cases of one behaviour.
+- Assert what callers observe (return values, rows, events, HTTP responses), never internal
+  state such as cache sizes or private fields.
+- Each test owns its state: no package-level DB handles or test ordering. `t.Helper()` in every
+  helper, `t.Cleanup()` for teardown, `t.Parallel()` where the test shares nothing.
+- Fixtures and golden files under `testdata/`. Slow DB-backed tests skip under `-short`.
+- DB tests use the repo's one provisioning path (`testx.NewConnection` / pgtest, migrations from
+  the repo); never add `testcontainers`, `sqlmock` or a second harness beside it.
+- Run `go test ./... -race -count=1`.
 
 ### Application framework — `github.com/flachnetz/startup/v2`
 
@@ -362,7 +379,7 @@ defer func() { _ = s.Shutdown() }()
 ### Code hygiene
 
 - Remove commented-out code (S125)
-- TODO/FIXME must include ticket ref: `// TODO(PROJ-1234): ...`
+- Open work carries a `DEV-TODO:` anchor (AGENTS.md); a plain `TODO`/`FIXME` includes a ticket ref: `// TODO(PROJ-1234): ...`
 - String literal used 3+ times → `const` (goconst)
 - Switch must have `default:` case (S131)
 - Collapse nested ifs: `if a { if b { ... } }` → `if a && b { ... }`

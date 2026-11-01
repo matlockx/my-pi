@@ -109,8 +109,7 @@ Example of the same point asked properly:
 | `.sh` | bash-scripts |
 | `.github/workflows/*.yml` | github-actions |
 | `.ts`/`.mts`/`.cts` | typescript |
-| `.tsx` | typescript + react |
-| `.jsx` | react |
+| `.tsx` | typescript |
 | `.py` | python |
 
 ## Anchor Comments

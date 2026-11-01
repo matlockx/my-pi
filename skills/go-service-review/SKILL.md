@@ -42,10 +42,10 @@ Order matters. Each phase feeds the next.
 | 3 | `rest`, `observability`, `ops` | Surface and operability |
 | 4 | `go-quality`, `tests` | Tool-driven, cheap to run late |
 | 5 | `dead-code`, `deps` | Mechanical, batched |
-| 6 | `extensibility`, `ponytail` | Judgement calls — run last, once constraints and real coupling are known |
+| 6 | `extensibility` | Judgement call — run last, once constraints and real coupling are known |
 
-`extensibility` and `ponytail` are deliberately last: their findings are the ones most
-often invalidated by a recorded decision or by coupling discovered in phase 1.
+`extensibility` is deliberately last: its findings are the ones most often invalidated by a
+recorded decision or by coupling discovered in phase 1.
 
 ## Recorded decisions win
 
@@ -119,7 +119,6 @@ Skip rules:
 | 2 | Areas: all applicable, or a subset? | all detected-applicable |
 | 3 | Any area to deep-dive beyond the checklist? | none |
 | 4 | File beads tasks for findings? (only asked if `bd` is available) | ask again after the report |
-| 5 | Include a `/ponytail-audit` over-engineering pass? | no |
 
 ## Step 3 — Scan plan and confirmation
 
@@ -130,7 +129,6 @@ Scan plan
   Scope:      whole repo (48 .go, 19 _test.go)
   Areas:      records docs layering security persistence concurrency rest
               observability ops go-quality tests dead-code deps
-  Skipped:    ponytail (not requested)
   Tools:      golangci-lint, go vet, gosec, govulncheck, dev/check
   Cost:       ~N files read, M tool runs
 Confirm? (yes / edit areas / cancel)
@@ -244,8 +242,9 @@ Findings:
   ground. **MAJOR**
 - Business logic in the handler (branching on state, computing amounts). **CRITICAL**
 
-Use `project_report` and `module_report` for the import graph and hub files rather than
-reading every file.
+Map the import graph with `go list -deps ./...` (or
+`go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...`) and find hub packages from it, or
+hand the mapping to a scout task, rather than reading every file.
 
 ## extensibility — Extensibility
 
@@ -271,8 +270,8 @@ If `docs/bdr/` or `docs/adr/` exists, they are the specification.
 
 ```bash
 dev/rule-coverage --strict        # if the repo has it
-rg -n '^\*\*R[0-9]+\*\*' docs/bdr docs/adr
-rg -n 'func Test(BDR|ADR)[0-9]+R[0-9]+' --type go
+rg -n '\*\*(BDR|ADR)-[0-9]{3}-R[0-9]+\*\*' docs/bdr docs/adr     # rules declared: - **BDR-016-R1** — …
+rg -n 'func Test(BDR|ADR)[0-9]{3}R[0-9]+' --type go               # rules covered: TestBDR016R1_…
 ```
 
 Findings:
@@ -581,12 +580,6 @@ gitleaks detect --no-banner       # secrets in history
 - Go version below the project's stated minimum. **MAJOR**
 
 If no tool is installed, say so explicitly rather than guessing from `go.sum`.
-
-## ponytail — Over-engineering pass (optional)
-
-Only when requested. Run the `ponytail-audit` skill and fold its ranked list into the
-report as a separate section with severity **MINOR** unless a simplification also removes
-a correctness risk, in which case keep the risk's own severity.
 
 ---
 

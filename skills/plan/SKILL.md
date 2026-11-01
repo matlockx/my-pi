@@ -25,9 +25,7 @@ This skill works best with a reasoning model (e.g., Claude Opus 4.6). The agent-
 
 1. **Read the user's request carefully.** Parse what they want to achieve, not just what they said.
 2. **Research the codebase** — use `read`, `grep`, `find`, `ls`, sem tools, and graph tools to understand the current state:
-   - `/skill:codebase-locator` patterns for finding files
-   - `/skill:codebase-analyzer` patterns for understanding code
-   - `/skill:codebase-pattern-finder` patterns for finding similar implementations
+   - Delegate broad exploration (where things live, how they work, similar implementations) to a read-only `scout` task
    - Search for `DEV-*` anchors in relevant directories
    - Use `sem_context`, `sem_impact`, `search_graph`, `trace_path` when available
 3. **Check for existing plans/specs** — look in `notes/specs/`, `notes/`, and beads (`bd list` if available)
@@ -142,4 +140,3 @@ When the user provides an existing spec or plan to modify:
 - This skill **supersedes**: `research-codebase`, `iterate-plan`
 - Companion skill: `/skill:build` for implementation
 - The plan output format is designed to be directly consumable by `/build`
-- Use `/skill:notes-locator` patterns when searching for existing context

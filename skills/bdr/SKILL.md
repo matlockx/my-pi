@@ -23,13 +23,14 @@ Every BDR follows this template:
 ```markdown
 # BDR-NNN: <Short Decision Title>
 
-**Status:** Active | Superseded by BDR-XXX
+**Status:** Active | Superseded by BDR-XXX | Active, except R2, which BDR-XXX (YYYY-MM-DD) supersedes
 **Date:** YYYY-MM-DD
 **Source:** <Jira ticket / Confluence link / stakeholder, if known>
 
 ## Rule
 
-<One-paragraph statement of the business rule or product decision.>
+- **BDR-NNN-R1** — <One testable statement of the rule.>
+- **BDR-NNN-R2** — <Next rule of the same decision.>
 
 ## Rationale
 
@@ -39,7 +40,16 @@ Every BDR follows this template:
 
 <Boundaries, exceptions, known quirks.>
 
+## Observability
+
+<Per rule: how a violation becomes visible — the log line, the audit/history entry, and the
+metric, or the automated check that fails. A rule that is an architectural absence (no user
+table, no push credential) says so: the absence appearing is the alarm.>
 ```
+
+Each rule ID (`BDR-NNN-Rn`) is what tests carry in their name (`TestBDR016R1_…`) and what
+`DEV-NOTE:` references quote, so keep the `- **BDR-NNN-Rn** —` form exactly; the rule-coverage
+checks in the golang and go-service-review skills search for it.
 
 No "Impact on Implementation" section — BDRs document the *what* and *why*, not *where*.
 Code references belong in `DEV-NOTE: see <repo>/BDR-NNN` comments at the implementation site.
@@ -48,12 +58,13 @@ the current repo, so cross-repo references are unambiguous.
 
 ## Rules
 
-1. **One rule per BDR.** Don't bundle unrelated business decisions.
+1. **One decision per BDR.** Split it into numbered rules, each testable on its own; don't bundle unrelated decisions.
 2. **Number sequentially.** `docs/bdr/NNN-short-slug.md`. Check existing files: `ls docs/bdr/`.
-3. **Immutable once active.** Don't edit old BDRs to reflect new reality — write a new one that supersedes.
-4. **Source matters.** Link the origin (Jira, Confluence, Slack thread, stakeholder name) when known.
-5. **Keep it short.** 1-2 paragraphs per section. The rule section should be quotable in one breath.
-7. **Status transitions:** Active (current truth) → Superseded (new BDR replaces).
+3. **Add it to the index.** Add a row to the table in `docs/bdr/README.md` (`| [NNN](NNN-slug.md) | Title | Status |`), and update the status column of any record it supersedes.
+4. **Immutable once active.** Don't edit old BDRs to reflect new reality — write a new one that supersedes. Only rule numbering and an `## Observability` section may be added to an existing record.
+5. **Source matters.** Link the origin (Jira, Confluence, Slack thread, stakeholder name) when known.
+6. **Keep it short.** 1-2 paragraphs per section. Each rule should be quotable in one breath.
+7. **Status transitions:** Active (current truth) → Superseded (new BDR replaces), or partially superseded with the superseded rules named in the status line.
 
 ## Naming Convention
 

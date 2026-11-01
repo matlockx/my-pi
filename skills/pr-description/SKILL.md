@@ -110,12 +110,6 @@ Think deeply about the code changes, their architectural implications, and poten
 - Confirm the update was successful
 - If any verification steps remain unchecked, remind the user to complete them before merging
 
-## Integration with Other Skills
-
-- `/skill:notes-locator` — Find existing PR descriptions, specs, and related notes.
-- `/skill:create-plan` — If the PR implements a spec, reference it in the description.
-- `/skill:codebase-analyzer` — For deeper understanding of changed code when the diff isn't enough context.
-
 ## Important Notes
 
 - This command works across different repositories — always read the local template

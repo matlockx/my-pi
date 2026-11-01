@@ -28,13 +28,9 @@ This skill works best with a fast execution model (e.g., Claude Sonnet 4.6). The
 |---|---|
 | `*.go` | `/skill:golang` |
 | `*.ts`, `*.mts`, `*.cts` | `/skill:typescript` |
-| `*.tsx` | `/skill:typescript` + `/skill:react` |
-| `*.jsx` | `/skill:react` |
+| `*.tsx` | `/skill:typescript` |
 | `*.py` | `/skill:python` |
 | `*.sh`, shell scripts | `/skill:bash-scripts` |
-| `*.tf` | `/skill:terraform-iac` |
-| `Chart.yaml`, `values.yaml`, `templates/` | `/skill:helm-charts` |
-| ArgoCD manifests | `/skill:argocd` |
 | `.github/workflows/*.yml` | `/skill:github-actions` |
 
 If touching multiple languages in one task, load all relevant skills upfront.
@@ -101,7 +97,7 @@ When the issue is a bug or unexpected behavior:
 
 - **Existing tests are a contract.** Never modify assertions solely to match new code. Investigate first.
 - **Never delete tests** without explicit user approval.
-- **Write tests for new code** — follow TDD when appropriate (`/skill:tdd-workflow` patterns).
+- **Write tests for new code** — test first when appropriate; Go testing patterns are in `/skill:golang`.
 - **Run the full relevant test suite** after changes, not just the new tests.
 - **No coverage-percentage target.** Run coverage reports or Sonar scans only when the user explicitly asks.
 
@@ -165,4 +161,3 @@ How should I proceed?
 - Companion skill: `/plan` for planning and spec creation
 - Reads specs from: `notes/specs/`, beads tasks, or inline instructions
 - Debugging patterns from: `debug` skill (folded in)
-- TDD patterns from: `tdd-workflow` skill (loaded when appropriate)
