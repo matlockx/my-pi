@@ -17,6 +17,7 @@
   "pi": {
     "extensions": [
       "./extensions/setup/index.ts",
+      "./extensions/skill-sources/index.ts",
       "./extensions/context.ts",
       "./extensions/review/review.ts",
       "./extensions/quick-review/index.ts",
