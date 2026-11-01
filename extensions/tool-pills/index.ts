@@ -3,6 +3,8 @@
  *
  * • ls, read, find, grep, bash → colored pill labels + collapsed output
  * • write, edit → Shiki-powered syntax-highlighted diffs (from pi-diff)
+ *
+ * Registers nothing when loaded by omp; omp renders its own tools.
  */
 
 import type { ExtensionAPI, AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
@@ -81,6 +83,12 @@ function wrapBasicTool(
 }
 
 export default function (pi: ExtensionAPI) {
+	// DEV-NOTE: omp (a Bun-compiled binary; pi runs on Node) gets nothing from this extension.
+	// Re-registering read/bash/grep there dropped omp's parameter schemas, replaced omp's grep
+	// with pi's, and removed `readsSkillUris` from read, which hides the skill list from the
+	// system prompt. Verified 2026-11-01 with omp 18.11.1 via the RPC get_state tool dump.
+	if ("Bun" in globalThis) return;
+
 	const cwd = process.cwd();
 
 	// ls
