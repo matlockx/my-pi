@@ -6,13 +6,14 @@
  *
  * DEV-NOTE: Model memory is per-mode. When you switch from build→plan,
  * the plan mode's last model is restored. When you switch back to build,
- * the build mode's model is restored. First activation uses defaults
- * from config files or hardcoded fallbacks.
+ * the build mode's model is restored. First activation uses the per-repo
+ * config file, else the newest model of the mode's family.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { newestOfFamily } from "./models.mjs";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ interface ModeConfig {
 // ── Config loading ────────────────────────────────────────────────────
 
 // DEV-NOTE: Per-repo config files (.pi/plan-config.json, .pi/build-config.json)
-// override hardcoded defaults. Format: { "model": "anthropic/claude-opus-4-0", "thinking": "high" }
+// override the family defaults. Format: { "model": "anthropic/claude-opus-5-5", "thinking": "high" }
 function loadModeConfig(cwd: string, mode: AgentMode): ModeConfig | null {
 	try {
 		const configPath = join(cwd, ".pi", `${mode}-config.json`);
@@ -48,18 +49,13 @@ function loadModeConfig(cwd: string, mode: AgentMode): ModeConfig | null {
 	}
 }
 
-// DEV-NOTE: Hardcoded defaults — used when no per-repo config exists.
-// These search available models by substring match, so they work across
-// provider naming variations.
-const DEFAULT_MODEL_HINTS: Record<AgentMode, { hints: string[]; thinking: string }> = {
-	plan: {
-		hints: ["claude-opus-4", "opus-4", "o3", "deepseek-r1"],
-		thinking: "high",
-	},
-	build: {
-		hints: ["claude-sonnet-4", "sonnet-4", "gpt-4.1", "claude-3-5-sonnet"],
-		thinking: "medium",
-	},
+// DEV-NOTE: Defaults when no per-repo config exists: the newest model of a family,
+// so new releases are picked up without edits. Fixed id prefixes ("claude-opus-4")
+// went stale and matched the oldest model of the line first (found 2026-11-01:
+// /plan switched an Opus 5.5 session to claude-opus-4-0).
+const MODE_DEFAULTS: Record<AgentMode, { family: string; thinking: string }> = {
+	plan: { family: "opus", thinking: "high" },
+	build: { family: "sonnet", thinking: "medium" },
 };
 
 // ── Model resolution ──────────────────────────────────────────────────
@@ -90,16 +86,8 @@ function findModel(ctx: ExtensionContext, config: ModeConfig | null, mode: Agent
 		if (match) return match;
 	}
 
-	// Fall back to hints
-	const { hints } = DEFAULT_MODEL_HINTS[mode];
-	for (const hint of hints) {
-		const match = available.find(
-			(m) => m.id.includes(hint) || m.name.toLowerCase().includes(hint.toLowerCase()),
-		);
-		if (match) return match;
-	}
-
-	return null;
+	// Fall back to the newest model of the mode's family
+	return newestOfFamily(available, MODE_DEFAULTS[mode].family, ctx.model?.provider);
 }
 
 // ── Extension ─────────────────────────────────────────────────────────
@@ -213,7 +201,7 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 		if (defaultModel) {
 			const ok = await pi.setModel(defaultModel);
 			if (ok) {
-				const thinkingLevel = config?.thinking ?? DEFAULT_MODEL_HINTS[targetMode].thinking;
+				const thinkingLevel = config?.thinking ?? MODE_DEFAULTS[targetMode].thinking;
 				pi.setThinkingLevel(thinkingLevel as any);
 
 				state.models[targetMode] = {

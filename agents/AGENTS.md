@@ -20,7 +20,7 @@ When unsure, **ask the developer** before making changes.
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
-| G-15 | New/changed code reaches **≥ 80 %** line+branch coverage (SonarQube gate); measure it before reporting done | Ship below 80 %, pad with assertion-free tests, or extend `sonar.*exclusions` to pass |
+| G-15 | In a repo with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI), new/changed code reaches **≥ 80 %** line+branch coverage; measure it locally before reporting done. Elsewhere coverage is opt-in | Ship below 80 % in a gated repo, pad with assertion-free tests, extend `sonar.*exclusions` to pass, or run coverage/Sonar where no gate exists and nobody asked |
 | G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 | G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
 
@@ -253,9 +253,11 @@ repository commits separately. Never commit or push before that approval.
 
 Tests are contracts. Never modify assertions solely to match new code. Never delete tests without approval. Investigate first.
 
-No coverage-percentage target (no 80% gate). Do not run coverage reports, coverage thresholds, or
-Sonar scans (`sonar`, `sonar-scanner`, SonarCloud/SonarQube analysis) unless the user explicitly asks.
-SonarCloud rules cited in the language skills are writing guidance, not a reason to run a scan.
+No coverage-percentage target, except in a repo with a SonarQube gate (see "New code coverage
+is at least 80 %" below). Elsewhere, do not run coverage reports or thresholds unless the user
+explicitly asks. Never run Sonar scans (`sonar`, `sonar-scanner`, SonarCloud/SonarQube analysis)
+unless the user explicitly asks; CI runs them. SonarCloud rules cited in the language skills are
+writing guidance, not a reason to run a scan.
 
 ### New code is tested by default
 
@@ -286,11 +288,15 @@ When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDR
 changing assertions. A failing test may protect a business rule — fix the code, not the test,
 unless a BDR has been explicitly superseded. When in doubt, ask the user before modifying test assertions.
 
-### New code coverage is at least 80 %
+### New code coverage is at least 80 % (repos with a SonarQube gate)
 
-SonarQube's quality gate fails a PR when coverage on new code is below **80 %**. Coverage on
-new code combines line and branch (condition) coverage over every added or changed line,
-exemptions above included: an untested accessor or wiring file still counts against the gate.
+Applies only when the repo has a SonarQube gate: a `sonar-project.properties` file, or a Sonar
+step (`sonarqube-scan-action`, `sonarcloud-github-action`, `sonar-scanner`) in `.github/workflows`.
+Without one, skip this section.
+
+The gate fails a PR when coverage on new code is below **80 %**. Coverage on new code combines
+line and branch (condition) coverage over every added or changed line, exemptions above
+included: an untested accessor or wiring file still counts against the gate.
 
 - Before reporting work done, run the repo's coverage tool (`go test -coverprofile`,
   `pytest --cov`, `vitest --coverage`, …) and check the changed lines and branches, not the
