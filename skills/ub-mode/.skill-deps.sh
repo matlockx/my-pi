@@ -3,6 +3,7 @@
 # Each tool gets its own uv-managed environment on Python 3.12 (the tools need
 # >= 3.11; macOS python3 is 3.9). Executables land in ~/bin, which is on PATH.
 # Re-running reinstalls from the current upstream main.
+# provides: crapper dryer mutator
 set -euo pipefail
 
 command -v uv >/dev/null || { echo "uv is required: brew install uv" >&2; exit 1; }

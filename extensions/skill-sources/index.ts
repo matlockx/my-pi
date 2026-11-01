@@ -19,6 +19,10 @@
  * `/skills-audit` prompt judges: usage from the omp and pi session logs, last
  * change, link source state, and similar descriptions.
  *
+ * At session start, one notification lists skills whose dependency tools are
+ * missing on this machine and, at most once a day, skills whose link source
+ * has a newer version or is gone. Silent when there is nothing to do.
+ *
  * GITHUB_TOKEN or GH_TOKEN, when set, authenticates the GitHub calls (private
  * repositories, higher rate limit).
  */
@@ -32,10 +36,12 @@ import { analyze } from "./analyze.mjs";
 import { auditData, gitLastChanged } from "./audit.mjs";
 import { installOne, removeOne, runDeps, updateAll } from "./flows.mjs";
 import { DEPS_FILE, readSource, skillDir } from "./sources.mjs";
+import { reportSkills } from "./startup.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const SKILLS_DIR = join(REPO, "skills");
 const SESSION_DIRS = [join(homedir(), ".omp/agent/sessions"), join(homedir(), ".pi/agent/sessions")];
+const CHECK_STATE = join(homedir(), ".omp/agent/skill-sources-check.json");
 
 function deps(signal?: AbortSignal) {
 	const token = process.env["GITHUB_TOKEN"] || process.env["GH_TOKEN"];
@@ -49,6 +55,13 @@ function env(ctx: ExtensionContext, signal?: AbortSignal) {
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("session_start", async (event, ctx) => {
+		// DEV-NOTE: pi sets event.reason ("startup", "resume", …); omp 18.11 sends no reason, so a
+		// missing reason counts as a start. Not awaited: the upstream check must not delay the first prompt.
+		if (event.reason && event.reason !== "startup") return;
+		void reportSkills({ skillsDir: SKILLS_DIR, statePath: CHECK_STATE, pathEnv: process.env["PATH"], ...env(ctx) });
+	});
+
 	// DEV-NOTE: install requires an analysis in the same session so the user sees the
 	// skill's tool and skill dependencies before anything is written.
 	const analysed = new Set<string>();

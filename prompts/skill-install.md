@@ -18,7 +18,7 @@ A GitHub link means a new install (an optional second word is the directory name
 3. **Skill.** On yes: `skill_install` (new) or `skill_reinstall` (installed from a link). Report its result line verbatim.
 4. **Skills it needs.** For each missing skill with a known link, ask whether to install it, and if yes run this whole procedure for it. A missing skill without a link: say so and ask the user for the link.
 5. **Tools.** If tools are missing and the user chose dependencies, write a bash script and pass it to `skill_deps_run` (it saves it as `.skill-deps.sh` next to the skill, shows it to the user and runs it only after the user agrees; do not ask separately). The script:
-   - starts with a comment block listing each tool, why the skill needs it and its source link;
+   - starts with a comment block listing each tool, why the skill needs it and its source link, followed by one line `# provides: <command> <command> …` naming every command the script puts on PATH (the session-start check looks these up and reports missing ones);
    - is idempotent: checks each tool first and skips what is present; updates existing checkouts with `git pull --ff-only` instead of cloning again;
    - installs into user directories only, never with sudo; keeps checkouts the tools need together (for example `~/tools/<repo>` when a tool expects its sibling at `../<other>`), and puts commands on PATH via a symlink in a PATH directory that exists, printing the PATH line to add when none fits;
    - does not read, print or store secrets;

@@ -36,9 +36,10 @@ async function report(ctx: ExtensionContext, quietWhenClean: boolean): Promise<v
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
-		if (event.reason !== "startup") return;
-		// DEV-NOTE: not awaited; the command probes (node, github-mcp-server, port)
-		// take up to a few seconds and must not delay the first prompt.
+		// DEV-NOTE: pi sets event.reason ("startup", "resume", …); omp 18.11 sends no reason, so a
+		// missing reason counts as a start. Not awaited; the command probes (node,
+		// github-mcp-server, port) take up to a few seconds and must not delay the first prompt.
+		if (event.reason && event.reason !== "startup") return;
 		void report(ctx, true);
 	});
 
