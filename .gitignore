@@ -5,3 +5,5 @@ graphify-out/
 .codebase-memory/
 *.log
 .idea
+.metrics/
+target/

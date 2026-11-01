@@ -20,7 +20,7 @@ When unsure, **ask the developer** before making changes.
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
-| G-15 | In a repo with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI), new/changed code reaches **≥ 80 %** line+branch coverage; measure it locally before reporting done. Elsewhere coverage is opt-in | Ship below 80 % in a gated repo, pad with assertion-free tests, extend `sonar.*exclusions` to pass, or run coverage/Sonar where no gate exists and nobody asked |
+| G-15 | New/changed code passes the repo's coverage gate before reporting done: with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI) **≥ 80 %** line+branch coverage, measured locally; otherwise every added or changed function at **CRAP ≤ 10** (`crapper --changed --threshold 10`). `crapper` not installed → report the gate as not run and point to `/skill-install ub-mode` | Ship over the gate, pad with assertion-free tests, extend `sonar.*exclusions` to pass, run Sonar scans nobody asked for, or report done without saying the gate was not run |
 | G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 | G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
 
@@ -253,11 +253,11 @@ repository commits separately. Never commit or push before that approval.
 
 Tests are contracts. Never modify assertions solely to match new code. Never delete tests without approval. Investigate first.
 
-No coverage-percentage target, except in a repo with a SonarQube gate (see "New code coverage
-is at least 80 %" below). Elsewhere, do not run coverage reports or thresholds unless the user
-explicitly asks. Never run Sonar scans (`sonar`, `sonar-scanner`, SonarCloud/SonarQube analysis)
-unless the user explicitly asks; CI runs them. SonarCloud rules cited in the language skills are
-writing guidance, not a reason to run a scan.
+Coverage gates: a repo with a SonarQube gate uses "New code coverage is at least 80 %"; every
+other repo uses "Complexity-weighted coverage (CRAP)". Both are below. Never run Sonar scans
+(`sonar`, `sonar-scanner`, SonarCloud/SonarQube analysis) unless the user explicitly asks; CI runs
+them. SonarCloud rules cited in the language skills are writing guidance, not a reason to run a
+scan.
 
 ### New code is tested by default
 
@@ -308,6 +308,32 @@ included: an untested accessor or wiring file still counts against the gate.
   pass the gate. Generated code is the one exclusion that needs no approval.
 - Not reachable without infrastructure the repo cannot run → say so with the measured figure,
   and ask the user before the PR is opened.
+
+### Complexity-weighted coverage (CRAP), repos without a SonarQube gate
+
+Every function added or changed in the task scores **CRAP ≤ 10**, as computed by `crapper`
+(from the ub-mode skill's tools): CRAP = complexity² × (1 − coverage)³ + complexity. A function
+with complexity 1–2 passes without a test; a branching function needs tests in proportion to its
+branches; complexity above 10 fails even when fully covered and has to be split.
+
+- Before reporting work done, run `crapper --changed --threshold 10` from the repo root. It runs
+  the tests with coverage and scores every function in the files changed in git (untracked files
+  included). `--use-existing-coverage` re-scores without rerunning the tests.
+- The gate is the functions the task added or changed. The exit code (2 when any scored function
+  is over the threshold) also counts older functions in the same files, so read the report rather
+  than the exit code. Report the worst score among the task's functions, and list older ones over
+  10 without fixing them unasked.
+- Over 10 → add tests for the uncovered branches, or split the function, until it passes. Real
+  assertions only, as above. The exemptions in "New code is tested by default" still apply when
+  named (wiring such as an extension's registration function scores high at 0 % coverage).
+- JavaScript/TypeScript: crapper runs `npm run coverage` when that script exists, else Vitest or
+  `c8 npm test`. A `node:test` project needs a `coverage` script that writes LCOV to
+  `target/coverage/typescript/lcov.info` (`node --test --experimental-test-coverage
+  --test-reporter=lcov --test-reporter-destination=…`); my-pi's `package.json` has one.
+- crapper writes `.metrics/` and `target/coverage/` into the repo; add them to `.gitignore` when
+  they are not ignored yet, and never commit them.
+- `crapper` not on PATH → say so and point to `/skill-install ub-mode`, which installs it.
+- Languages crapper does not score (shell, SQL, YAML, Terraform) are exempt; say so.
 
 ### Rule traceability (repos with `docs/bdr/` or `docs/adr/`)
 

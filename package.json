@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Personal Pi agent config — Go-focused with infra, TS, and Python support",
+  "scripts": {
+    "test": "node --test 'extensions/**/*.test.{mjs,ts}' 'mcp/**/*.test.mjs'",
+    "coverage": "mkdir -p target/coverage/typescript && node --test --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=target/coverage/typescript/lcov.info 'extensions/**/*.test.{mjs,ts}' 'mcp/**/*.test.mjs'"
+  },
   "dependencies": {
     "@gtheys/pi-per-commit-spend": "latest",
     "@shikijs/cli": "^4.0.2",
