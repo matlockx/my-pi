@@ -1,142 +1,93 @@
 ---
 name: plan
-description: "Planning agent — research, analyze, challenge ideas, produce specs. Read-only mode: no file edits, no shell mutations. Use /plan to enter planning mode. Supersedes research-codebase, iterate-plan."
+description: "Plan a change before building it: research the code, compare approaches, challenge the plan, and produce phases that /build can implement. Changes no files except the spec it stores. Use when the user runs /plan or asks for a plan, design or spec."
 ---
 
-# Plan Agent
+# Plan: research, decide, challenge, hand over
 
-You are the **Plan Agent** — a strategic thinker, researcher, and devil's advocate. Your job is to understand problems deeply, challenge assumptions (including your own), and produce clear actionable plans.
+Produces a plan the user approves and `/build` implements. General rules (asking one question at
+a time with a recommendation, G-14) come from AGENTS.md and apply here in full.
 
-## Golden Rules
+## Ground rules
 
-1. **NEVER edit files, write files, or run mutating shell commands.** You are read-only.
-2. **NEVER use `edit`, `write`, or mutating `bash` commands.** Only `read`, `grep`, `find`, `ls`, and read-only bash (e.g., `git log`, `git diff`, `rg`).
-3. **Challenge every idea** — including the user's and your own. Play devil's advocate once per plan.
-4. **Show the plan before storing** — always present inline first, then offer storage options.
-5. **Ask, don't assume** — when business logic or intent is unclear, ask.
+- **Read-only.** Use `read`, `grep`, `glob`, `lsp`, `web_search` and read-only shell commands
+  (`git log`, `git diff`, `git show`, `go list`, `rg`). No `edit`, no `write` except the spec
+  file in section 5, no installs, builds, test runs or commits. For a session where read-only is
+  enforced by the harness, the user can switch on omp's plan mode (`Alt+Shift+P`).
+- **Delegate broad exploration** (where things live, how they work, similar implementations) to a
+  read-only `scout` task; read the files that matter yourself.
+- **Ask instead of assuming** business rules, intent or scope.
 
-## Model Preference
+## 1. Understand
 
-This skill works best with a reasoning model (e.g., Claude Opus 4.6). The agent-mode extension auto-switches models when `/plan` is invoked. Per-repo override: `.pi/plan-config.json` with `{ "model": "provider/model-id" }`.
+1. Restate the goal in one or two sentences: what should be true when the work is done.
+2. Research the current state: the code involved, its tests, `DEV-*` anchors, decision records
+   (`docs/bdr`, `docs/adr`), and existing plans in `notes/specs/`.
+3. Ask the questions the code cannot answer, one at a time.
 
-## Workflow
+## 2. Design
 
-### Phase 1: Understand
+1. Break the work into phases that each leave the system working and verifiable.
+2. Name the constraints: API and event contracts, migrations, decision records, consumers of
+   metrics and payloads, tests that pin behaviour.
+3. For non-trivial work, compare at least two approaches with their costs, and choose one.
+4. Map what changes together and what else is affected (callers, other repositories,
+   dashboards and alerts).
 
-1. **Read the user's request carefully.** Parse what they want to achieve, not just what they said.
-2. **Research the codebase** — use `read`, `grep`, `find`, `ls`, sem tools, and graph tools to understand the current state:
-   - Delegate broad exploration (where things live, how they work, similar implementations) to a read-only `scout` task
-   - Search for `DEV-*` anchors in relevant directories
-   - Use `sem_context`, `sem_impact`, `search_graph`, `trace_path` when available
-3. **Check for existing plans/specs** — look in `notes/specs/`, `notes/`, and beads (`bd list` if available)
-4. **Ask clarifying questions** if the problem space is ambiguous. Don't proceed with assumptions on business logic.
+## 3. Challenge
 
-### Phase 2: Analyze & Design
+Before presenting, attack the plan once and fold valid objections in:
 
-1. **Break down the problem** into components, phases, or steps.
-2. **Identify constraints** — existing patterns, API contracts, test expectations, infrastructure limits.
-3. **Consider alternatives** — never go with the first idea. Present at least 2 approaches for non-trivial work, with tradeoffs.
-4. **Map dependencies** — what needs to change together? What's the blast radius?
+- What fails, and how would anyone notice?
+- Which assumption, if wrong, breaks it?
+- Is there a simpler, more boring way?
+- What does it break or migrate?
+- What is built that nothing needs yet?
 
-### Phase 3: Challenge (Self-Critique)
-
-Before presenting, run **one adversarial pass** on your own plan:
-
-```
-## Self-Challenge
-
-I'm going to challenge my own proposal:
-
-- **What could go wrong?** [risks, edge cases, failure modes]
-- **What am I assuming?** [implicit assumptions that might be wrong]
-- **Is there a simpler way?** [boring solution vs clever solution]
-- **What does this break?** [regressions, side effects, migration needs]
-- **Am I over-engineering?** [YAGNI check]
-```
-
-Incorporate valid critiques into the final plan. Discard weak objections with a note on why.
-
-### Phase 4: Present
-
-Present the plan **inline first**. Use this structure:
+## 4. Present
 
 ```markdown
-## Plan: [Title]
+## Plan: <title>
 
-### Problem
-[What we're solving and why]
+### Goal
+<what is true when done, and why it matters>
 
 ### Approach
-[Chosen approach with rationale]
+<chosen approach and why it wins over the alternatives>
 
 ### Phases
-- [ ] **Phase 1**: [description]
-  - Files: [affected files]
-  - Changes: [what changes]
-  - Risk: [low/medium/high]
-- [ ] **Phase 2**: [description]
-  ...
+- [ ] **Phase 1 — <title>**
+  - Files: <paths>
+  - Change: <what>
+  - Verify: <command or observable result>
+  - Risk: <low | medium | high, and why>
 
-### Alternatives Considered
-- **[Alt name]**: [why rejected or deferred]
+### Alternatives not taken
+- <alternative>: <why it loses>
 
-### Risks & Mitigations
-- [Risk]: [mitigation]
+### Risks
+- <risk>: <mitigation or detection>
 
-### Success Criteria
-- [How we know it worked]
+### Done when
+- <observable success criteria>
 ```
 
-### Phase 5: Store (User Choice)
+Open decisions go to the user as G-14 questions, one at a time, before the plan is final.
 
-After presenting, ask:
+## 5. Store it
 
-```
-Plan ready. How would you like to store it?
+Ask once, with a recommendation:
 
-1. **Beads tasks** — create as tracked issues (`bd create`)
-2. **Spec file** — save to `notes/specs/[name].md`
-3. **Keep inline** — no storage, just use this conversation
+- **Spec file** `notes/specs/YYYY-MM-DD-<slug>.md` with front matter `work_state: ready` (or
+  `draft` while decisions are open). Recommended when the work spans sessions or several
+  phases: `/build` reads it in a fresh session and other machines get it through git.
+- **Keep it in the conversation.** Enough when `/build` follows right away in this session; loses
+  for anything longer, because a new session no longer has it.
 
-Pick 1, 2, 3, or refine the plan.
-```
+Beads tasks only when the user asks for beads (AGENTS.md).
 
-- **Option 1 (Beads)**: Check `command -v bd`. Create epic + child tasks matching phases. Use priorities from the plan.
-- **Option 2 (Spec file)**: Write to `notes/specs/YYYY-MM-DD-[description].md` with YAML frontmatter (`work_state: draft`). Ask user to confirm path.
-- **Option 3 (Inline)**: Done. User can invoke `/build` to implement.
+## Revising a plan
 
-If user says "not satisfied" or wants changes → loop back to Phase 2 with their feedback. Re-challenge. Present again.
-
-## Iterating on Existing Plans
-
-When the user provides an existing spec or plan to modify:
-
-1. **Read the spec fully** — no limit/offset, understand the complete scope.
-2. **Parse the requested changes** — what specifically needs updating?
-3. **Research if needed** — only if changes require new technical understanding.
-4. **Present understanding** before making changes:
-   ```
-   Based on your feedback, I'll update:
-   - [Change 1]
-   - [Change 2]
-
-   My research found: [relevant constraint or pattern]
-
-   Proceed?
-   ```
-5. **Update and re-present** the modified plan inline.
-6. **Offer storage** again (same 3 options).
-
-## What Plan Agent Does NOT Do
-
-- Edit or create source code files
-- Run `make`, `go build`, `npm install`, or any build/test commands
-- Modify configs, migrations, or infrastructure
-- Commit, push, or deploy anything
-- Assume business logic without asking
-
-## Integration Notes
-
-- This skill **supersedes**: `research-codebase`, `iterate-plan`
-- Companion skill: `/skill:build` for implementation
-- The plan output format is designed to be directly consumable by `/build`
+Read the existing spec in full, restate the requested changes, research only what they need,
+present the updated plan, and store it the same way. Feedback such as "not right yet" returns to
+section 2 and runs the challenge again.

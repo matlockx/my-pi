@@ -15,13 +15,14 @@ If no arguments are provided, find all `.py` files in the current project (exclu
 
 ## Step 2: Run linting and formatting tools
 
-Run the following tools if available and capture the output:
+Run the following tools and capture the output. In a project with `uv.lock`, prefix each with
+`uv run` (tools installed as dev dependencies are not on PATH otherwise):
 1. `ruff check .` - lint for all configured rule sets
 2. `ruff format --check .` - check formatting compliance
 3. `mypy .` or `mypy src/` - type checking (if configured in pyproject.toml)
 4. `bandit -r src/` - security scan (if installed and not covered by ruff S rules)
 
-If a tool is not installed, note this and proceed with manual review.
+If a tool is not installed in the project or on PATH, note this and proceed with manual review.
 
 ## Step 3: Review against SonarCloud and Ruff rules
 

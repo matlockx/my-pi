@@ -1,267 +1,125 @@
 ---
 name: debug
-description: "Bootstrap a debugging session for issues encountered during manual testing or implementation. Investigates logs (kubectl pods), database state, and git history without editing files. Use when something is broken, unexpected behavior occurs, or you need to trace an issue."
+description: "Investigate a bug or failure without editing files: logs, metrics and traces (Grafana MCP: Loki, Prometheus, Tempo), Docker Compose, Kubernetes, local tests, database state and git history. Use when something is broken, behaves unexpectedly, or an error needs tracing."
 ---
 
-# Debug Session
+# Debug session
 
-You are tasked with helping debug issues during manual testing or implementation. Your role is to **investigate only** — examine logs, database state, and git history without editing files.
+Investigate only: read logs, metrics, traces, state and history, and report the cause with
+evidence. Do not edit files, restart services or change data; propose the fix and let the user
+decide.
 
-## Arguments
+## 1. Get the facts
 
-The skill accepts an optional issue reference as `$ARGUMENTS`.
+If the user has not said so, ask in one message:
 
----
+- What was being done (endpoint, job, screen, command), and what happened instead?
+- The exact error text, status code or stack trace.
+- When it last worked, and what changed since (deploy, migration, config, dependency update).
 
-## Initial Response
+## 2. Find where it runs
 
-### When invoked WITH context:
+The place decides the tools. Settle it before collecting evidence.
 
+| Where | Signals | Logs and state |
+| --- | --- | --- |
+| Local process or test | reproduces on this machine | run it, read stderr, run the failing test |
+| Homelab (Raspberry Pi, NAS) | homelab stacks, paperless, backups, home services | `grafana` MCP: Loki, Prometheus |
+| Hetzner server (mhj, lifepace) | Lisa's services, manychat-gr, finance, content, lifepace engine | `grafana-hetzner` MCP: Loki, Prometheus, Tempo |
+| Kubernetes (work clusters) | namespaces, pods, Helm charts | `kubectl`, the cluster's own observability stack |
+
+Both Grafana MCP servers describe their dashboards and labels in their server instructions; read
+a dashboard's summary and panel queries before guessing metric names.
+
+## 3. Collect evidence
+
+### Logs (Loki through the Grafana MCP)
+
+Containers are `{job="docker"}` with labels `compose_project`, `compose_service`, `container`;
+the host journal is `{job="journal"}` with `unit` and `level`. Start narrow, then widen:
+
+```logql
+{job="docker", compose_service="<service>"} |~ "(?i)error|panic|fatal|exception"
+{job="journal", unit="<unit>.service"}
 ```
-I'll help debug this issue: $ARGUMENTS
 
-What specific problem are you encountering?
-- What were you trying to test/implement?
-- What went wrong?
-- Any error messages or unexpected behavior?
+Use `query_loki_patterns` to see which messages dominate, and `query_loki_stats` before pulling a
+long range. Loki keeps 7 days.
 
-I'll investigate the logs, database, and git state to figure out what's happening.
-```
+### Metrics and probes (Prometheus through the Grafana MCP)
 
-### When invoked WITHOUT context:
+Error rates, restarts and reachability around the failure time: `up`, `probe_success`,
+container restarts from cAdvisor, and the service's own counters (their names are in the
+dashboard panel queries). Prometheus keeps 15 days.
 
-```
-I'll help debug your current issue.
+### Traces (Tempo, Hetzner only)
 
-Please describe what's going wrong:
-- What are you working on?
-- What specific problem occurred?
-- Any error messages or stack traces?
-- When did it last work correctly?
+`search_tempo_traces` with `resource.service.name = "<service>"` and `status = error`, then
+`get_tempo_trace` for one failing request.
 
-I can investigate logs (kubectl), application state, and recent git changes to help identify the root cause.
-```
+### Docker on this machine
 
-Wait for user's description before proceeding.
+`docker compose ps`, `docker compose logs --since 30m <service> | rg -i 'error|panic|fatal'`.
+Remote hosts are inspected through Loki; ask before using `ssh`.
 
----
-
-## Available Investigation Tools
-
-### 1. Application Logs (Go)
+### Kubernetes
 
 ```bash
-# Check structured logs (slog output)
-# If running locally:
-go run ./cmd/server 2>&1 | grep -i "error\|warn\|fatal"
-
-# If running in K8s:
-kubectl get pods -A
-kubectl logs -n <namespace> <pod-name> --tail=200
-kubectl logs -n <namespace> <pod-name> --tail=200 | rg -i "error|panic|fatal|warn"
-
-# Previous crashed container
-kubectl logs -n <namespace> <pod-name> --previous
-
-# Describe pod for events/crash reason
-kubectl describe pod -n <namespace> <pod-name>
+kubectl get pods -n <ns> | rg -v 'Running|Completed'
+kubectl describe pod -n <ns> <pod>
+kubectl logs -n <ns> <pod> --since=30m | rg -i 'error|panic|fatal'
+kubectl logs -n <ns> <pod> --previous      # crashed container
+kubectl get events -n <ns> --sort-by=.lastTimestamp
 ```
 
-### 2. Go-specific Debugging
+### Local code and tests
 
 ```bash
-# Check for panics in logs
-kubectl logs -n <namespace> <pod-name> --tail=500 | rg "panic:|goroutine \d+"
-
-# Build with race detector
-go build -race ./cmd/server
-
-# Run tests with verbose output on failing package
-go test -v -run TestSpecificTest ./internal/package/...
-
-# Check for deadlocks — run with -timeout
-go test -timeout 30s -v ./internal/package/...
-
-# Profile CPU/memory if performance issue
-go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
-go tool pprof http://localhost:6060/debug/pprof/heap
-
-# Use dlv (Delve) for interactive debugging
-dlv debug ./cmd/server -- --config=config.yaml
-dlv test ./internal/package/ -- -run TestSpecificTest
+go test -run TestName -v -race -count=1 ./internal/pkg/...
+go test -timeout 30s ./internal/pkg/...    # hangs and deadlocks
 ```
 
-### 3. Database State
+For stepping through Go code, omp's `debug` tool drives Delve (`dlv`, install it first if it is
+missing). For profiles: `go tool pprof http://localhost:6060/debug/pprof/heap`.
+
+### Database state
+
+Read-only queries only (`SELECT`, `\d <table>`), against the environment the user names; never
+production without explicit permission. Check the migration table (`goose_db_version`,
+`schema_migrations`) when the failure follows a deploy. If no client is installed, say so and
+give the user the query.
+
+### Git history
 
 ```bash
-# Connect to database (adjust connection string for your project)
-psql $DATABASE_URL
-
-# Run a one-off query
-psql $DATABASE_URL -c "<SQL>"
-
-# List all tables
-psql $DATABASE_URL -c "\dt"
-
-# Describe a specific table
-psql $DATABASE_URL -c "\d <table_name>"
-
-# Check migration state (goose)
-psql $DATABASE_URL -c "SELECT * FROM goose_db_version ORDER BY id DESC LIMIT 5;"
-
-# Check migration state (golang-migrate)
-psql $DATABASE_URL -c "SELECT * FROM schema_migrations;"
+git log --oneline --since='3 days ago'
+git log --oneline -10 -- <suspect-file>
+git log -S '<identifier>' --oneline        # when a symbol appeared or vanished
+git diff <last-good>..HEAD --stat
 ```
 
-### 4. Kubernetes Cluster State
+## 4. Report
 
-```bash
-# List all running pods
-kubectl get pods -A
+```markdown
+## Debug findings
 
-# Find pods matching service name
-kubectl get pods -A | rg -i "<service-name>"
+### Investigated
+- Logs: <datasource, query, time range>
+- Metrics/traces: <queries, trace ids>
+- State: <commands or queries run>
+- Git: <commits and files read>
 
-# Check deployments and replicas
-kubectl get deployments -A
+### Found
+- <finding> — evidence: <quoted log line, metric value, trace span, commit hash>
 
-# Recent cluster events
-kubectl get events -A --sort-by='.lastTimestamp' | tail -30
+### Root cause
+<one or two sentences; say "hypothesis" and what would confirm it if not proven>
 
-# Crashlooping or failed pods
-kubectl get pods -A | rg -v "Running|Completed"
-
-# Check services and endpoints
-kubectl get svc -A
-kubectl get endpoints -n <namespace> <service-name>
-
-# Check configmaps and secrets (names only)
-kubectl get configmaps -n <namespace>
-kubectl get secrets -n <namespace>
+### Next steps
+1. <fix to make, with file or config>
+2. <check that proves the fix>
 ```
 
-### 5. Git History & Recent Changes
-
-```bash
-# Recent commits on current branch
-git log --oneline -20
-
-# What changed in the last commit
-git show --stat HEAD
-
-# Changes since a specific commit
-git diff <commit>..HEAD --stat
-
-# Who changed a specific file recently
-git log --oneline -10 -- <file>
-
-# Show changes to a specific file
-git diff HEAD~5 -- <file>
-
-# Check current branch and status
-git status && git branch
-```
-
----
-
-## Investigation Strategy
-
-### Step 1: Gather context from user
-
-Understand:
-- What they were doing (feature area, endpoint, flow)
-- What broke (error message, panic, wrong data, 500, silent failure)
-- When it last worked (after a deploy? migration? code change?)
-
-### Step 2: Map to components
-
-Based on the description, identify:
-- Which service/pod handles this flow?
-- Which database tables are involved?
-- Were there recent migrations or code changes?
-- Is this a concurrency issue (goroutine leak, race, deadlock)?
-
-### Step 3: Check logs first
-
-```bash
-# Find the relevant pod
-kubectl get pods -A | rg -i "<service-name>"
-
-# Check for errors, panics, and warnings
-kubectl logs -n <namespace> <pod-name> --tail=200 | rg -i "error|panic|fatal|warn"
-
-# Full recent logs if needed
-kubectl logs -n <namespace> <pod-name> --tail=200
-```
-
-### Step 4: Check Go-specific issues
-
-```bash
-# Look for goroutine dumps (deadlock/panic)
-kubectl logs -n <namespace> <pod-name> --tail=500 | rg -A 20 "goroutine \d+"
-
-# Check if binary was built with race detector
-# Look for race condition output
-kubectl logs -n <namespace> <pod-name> --tail=500 | rg "DATA RACE"
-```
-
-### Step 5: Check database state
-
-If the issue involves data:
-```bash
-psql $DATABASE_URL -c "SELECT * FROM <table> WHERE <condition> LIMIT 10;"
-psql $DATABASE_URL -c "SELECT * FROM goose_db_version ORDER BY id DESC LIMIT 5;"
-```
-
-### Step 6: Correlate with recent changes
-
-```bash
-git log --oneline -10
-git log --oneline -10 -- <suspected-file>
-```
-
-### Step 7: Synthesize findings
-
-Present:
-1. **Root cause hypothesis** — what you believe is wrong and why
-2. **Evidence** — log lines, DB state, git commits that support it
-3. **Recommended fix** — what to do (but don't do it — surface it for the developer)
-
----
-
-## Output Format
-
-After investigation, present findings as:
-
-```
-## Debug Findings
-
-### What I investigated:
-- Logs: [pod name, namespace, time range]
-- Database: [tables/queries checked]
-- Git: [commits/files reviewed]
-- Go-specific: [race detector, pprof, dlv findings]
-
-### What I found:
-- [Specific finding with evidence — log line, query result, commit hash]
-- [Corroborating detail]
-
-### Root cause hypothesis:
-[Concise explanation of what's wrong and why]
-
-### Recommended next steps:
-1. [Specific action to fix or verify]
-2. [Follow-up check]
-```
-
----
-
-## Important Guidelines
-
-1. **Investigate, don't fix** — surface findings, let the developer decide on the fix
-2. **Show evidence** — always quote the specific log line, query result, or git commit
-3. **Check all layers** — logs, DB, git history often point to the same root cause
-4. **Be specific about pod names** — always show the exact pod/namespace used
-5. **Check for Go-specific issues** — panics, goroutine leaks, race conditions, nil pointer dereferences
-6. **Ask before assuming scope** — if the issue could span multiple services, ask which to focus on first
-7. **Note crashlooping pods** — always check for non-Running pods as part of initial triage
+Rules: quote the exact log line, query result or commit for every claim; name the datasource,
+namespace or container used; if the issue may span several services, ask which to start with;
+an unproven cause is labelled a hypothesis, with the check that would settle it.
