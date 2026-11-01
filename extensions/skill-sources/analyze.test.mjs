@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { analyze, dependencyFacts, findCommands, findLinks, findSkillRefs, onPath } from "./analyze.mjs";
 import { DEPS_FILE, SOURCE_FILE } from "./sources.mjs";
+import { SKILL, fakeGitHub } from "./test/fake-github.mjs";
 
 const UB = [
 	"---\nname: ub-mode\ndescription: x\n---",
@@ -121,4 +122,41 @@ test("analyze refuses names that are not skills", async (t) => {
 
 	await assert.rejects(analyze("../x", { skillsDir, pathEnv: "" }), /invalid skill name/);
 	await assert.rejects(analyze("nope", { skillsDir, pathEnv: "" }), /no skill nope/);
+});
+
+test("analyze of a link reads upstream without installing, and of an installed name prefers its working link", async (t) => {
+	const skillsDir = join(tmp(t), "skills");
+	fs.mkdirSync(skillsDir);
+	const { fetch } = fakeGitHub({ repos: { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("tools", "Use the zzz tool.") } } } } });
+
+	const link = await analyze(" https://github.com/o/r/tree/main/s ", { skillsDir, pathEnv: "", fetch });
+
+	assert.equal(link.target, "https://github.com/o/r/tree/main/s");
+	assert.deepEqual([link.origin, link.name, link.url, link.installed], ["upstream", "tools", "https://github.com/o/r/tree/main/s", false]);
+	assert.equal(link.depsScript, null);
+	assert.equal(Object.hasOwn(link, "note"), false);
+	assert.deepEqual(link.facts.commands, [{ name: "zzz", path: null }]);
+	assert.deepEqual(fs.readdirSync(skillsDir), []);
+
+	fs.mkdirSync(join(skillsDir, "tools"));
+	fs.writeFileSync(join(skillsDir, "tools/SKILL.md"), SKILL("tools", "old local text"));
+	const source = { url: link.url, owner: "o", repo: "r", ref: "main", path: "s", kind: "dir", updates: true, files: {} };
+	fs.writeFileSync(join(skillsDir, "tools", SOURCE_FILE), JSON.stringify(source));
+
+	const installed = await analyze("tools", { skillsDir, pathEnv: "", fetch });
+
+	assert.deepEqual([installed.origin, installed.installed], ["upstream", true]);
+	assert.match(installed.texts["SKILL.md"], /zzz tool/);
+});
+
+test("analyze of a skill with an unreadable source record analyses the local copy and says so", async (t) => {
+	const skillsDir = join(tmp(t), "skills");
+	fs.mkdirSync(join(skillsDir, "broken"), { recursive: true });
+	fs.writeFileSync(join(skillsDir, "broken/SKILL.md"), UB);
+	fs.writeFileSync(join(skillsDir, "broken", SOURCE_FILE), "{");
+
+	const a = await analyze("broken", { skillsDir, pathEnv: "" });
+
+	assert.deepEqual([a.origin, a.url], ["local", null]);
+	assert.match(a.note, /^source record unreadable: /);
 });

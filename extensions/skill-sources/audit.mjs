@@ -27,16 +27,18 @@ export function listSkills(skillsDir) {
 	if (!fs.existsSync(skillsDir)) return [];
 	const out = [];
 	for (const d of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-		const file = join(skillsDir, d.name, "SKILL.md");
-		if (!d.isDirectory() || !fs.existsSync(file)) continue;
-		const text = fs.readFileSync(file, "utf8");
-		const fm = frontMatter(text) ?? {};
-		const files = fs
-			.readdirSync(join(skillsDir, d.name), { recursive: true, withFileTypes: true })
-			.filter((e) => e.isFile() && e.name !== ".source.json").length;
-		out.push({ dir: d.name, name: fm.name ?? d.name, description: fm.description ?? "", text, files });
+		if (d.isDirectory() && fs.existsSync(join(skillsDir, d.name, "SKILL.md"))) out.push(readSkill(skillsDir, d.name));
 	}
 	return out.sort((a, b) => a.dir.localeCompare(b.dir));
+}
+
+function readSkill(skillsDir, dir) {
+	const text = fs.readFileSync(join(skillsDir, dir, "SKILL.md"), "utf8");
+	const fm = frontMatter(text) ?? {};
+	const files = fs
+		.readdirSync(join(skillsDir, dir), { recursive: true, withFileTypes: true })
+		.filter((e) => e.isFile() && e.name !== ".source.json").length;
+	return { dir, name: fm.name ?? dir, description: fm.description ?? "", text, files };
 }
 
 function sessionFiles(dirs) {
@@ -58,28 +60,36 @@ function textsOf(content) {
 /** Returns the skill keys (dir names) one session log record refers to. */
 export function skillRefs(record, resolve) {
 	const msg = record?.type === "message" ? record.message : null;
-	if (!msg) return [];
+	if (msg?.role === "assistant") return readCallRefs(msg.content, resolve);
+	if (msg?.role === "user") return userTextRefs(msg.content, resolve);
+	return [];
+}
+
+/** Skills read by `read` tool calls: SKILL.md paths under a skills/ directory, or skill:// URLs. */
+function readCallRefs(content, resolve) {
+	if (!Array.isArray(content)) return [];
+	return content
+		.filter((c) => c?.type === "toolCall" && c.name === "read")
+		.map((c) => pathRef(c.arguments?.path, resolve))
+		.filter(Boolean);
+}
+
+function pathRef(p, resolve) {
+	if (typeof p !== "string" || p.includes("node_modules")) return null;
+	const uri = /^skill:\/\/([^/]+)/.exec(p);
+	if (uri) return resolve.name(uri[1]);
+	const m = SKILL_FILE.exec(p);
+	return m ? resolve.dir(m[1]) : null;
+}
+
+/** Skills injected into user messages: `<skill name=…>`, `[Skill directory: …]`, or a leading `/skill:`. */
+function userTextRefs(content, resolve) {
 	const refs = [];
-	const byPath = (p) => {
-		if (typeof p !== "string" || p.includes("node_modules")) return;
-		const uri = /^skill:\/\/([^/]+)/.exec(p);
-		if (uri) return refs.push(resolve.name(uri[1]));
-		const m = SKILL_FILE.exec(p);
-		if (m) refs.push(resolve.dir(m[1]));
-	};
-	if (msg.role === "assistant" && Array.isArray(msg.content)) {
-		for (const c of msg.content) if (c?.type === "toolCall" && c.name === "read") byPath(c.arguments?.path);
-	}
-	if (msg.role === "user") {
-		for (const t of textsOf(msg.content)) {
-			for (const m of t.matchAll(/<skill name="([^"]+)"/g)) refs.push(resolve.name(m[1]));
-			for (const m of t.matchAll(/\[Skill directory: ([^\]\n]+)\]/g)) {
-				const d = SKILL_DIR.exec(m[1].trim());
-				if (d) refs.push(resolve.dir(d[1]));
-			}
-			const cmd = /^\/skill:([a-z0-9._-]+)/.exec(t.trimStart());
-			if (cmd) refs.push(resolve.name(cmd[1]));
-		}
+	for (const t of textsOf(content)) {
+		for (const m of t.matchAll(/<skill name="([^"]+)"/g)) refs.push(resolve.name(m[1]));
+		for (const m of t.matchAll(/\[Skill directory: ([^\]\n]+)\]/g)) refs.push(resolve.dir(SKILL_DIR.exec(m[1].trim())?.[1]));
+		const cmd = /^\/skill:([a-z0-9._-]+)/.exec(t.trimStart());
+		if (cmd) refs.push(resolve.name(cmd[1]));
 	}
 	return refs.filter(Boolean);
 }
@@ -100,37 +110,47 @@ export async function skillUsage(sessionDirs, skills, since) {
 	let oldest = null;
 	let skipped = 0;
 	for (const file of files) {
-		const last = new Map();
-		let mtime;
+		let scan;
 		// DEV-NOTE: running sessions write and delete their logs while the scan runs;
 		// one vanished or unreadable file must not abort the audit.
 		try {
-			mtime = fs.statSync(file).mtime;
-			const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-			for await (const line of lines) {
-				if (!MARKERS.some((m) => line.includes(m))) continue;
-				let record;
-				try {
-					record = JSON.parse(line);
-				} catch {
-					continue;
-				}
-				const ts = record.timestamp ? new Date(record.timestamp) : mtime;
-				for (const dir of skillRefs(record, resolve)) if (!last.has(dir) || last.get(dir) < ts) last.set(dir, ts);
-			}
+			scan = await lastUses(file, resolve);
 		} catch {
 			skipped++;
 			continue;
 		}
-		if (!oldest || mtime < oldest) oldest = mtime;
-		for (const [dir, ts] of last) {
-			const u = usage.get(dir);
-			u.sessions++;
-			if (ts >= since) u.recent++;
-			if (!u.lastUsed || ts > u.lastUsed) u.lastUsed = ts;
-		}
+		if (!oldest || scan.mtime < oldest) oldest = scan.mtime;
+		for (const [dir, ts] of scan.last) countUse(usage.get(dir), ts, since);
 	}
 	return { usage, logs: { files: files.length - skipped, skipped, oldest } };
+}
+
+/** Returns the file's mtime and, per skill used in it, the time of its last use. */
+async function lastUses(file, resolve) {
+	const mtime = fs.statSync(file).mtime;
+	const last = new Map();
+	const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+	for await (const line of lines) {
+		const record = MARKERS.some((m) => line.includes(m)) ? parseRecord(line) : null;
+		if (!record) continue;
+		const ts = record.timestamp ? new Date(record.timestamp) : mtime;
+		for (const dir of skillRefs(record, resolve)) if (!last.has(dir) || last.get(dir) < ts) last.set(dir, ts);
+	}
+	return { mtime, last };
+}
+
+function parseRecord(line) {
+	try {
+		return JSON.parse(line);
+	} catch {
+		return null;
+	}
+}
+
+function countUse(u, ts, since) {
+	u.sessions++;
+	if (ts >= since) u.recent++;
+	if (!u.lastUsed || ts > u.lastUsed) u.lastUsed = ts;
 }
 
 const STOP = new Set(
@@ -180,17 +200,6 @@ export async function auditData({ skillsDir, sessionDirs, windowDays = USAGE_WIN
 	const installed = new Map(listInstalled(skillsDir).map((e) => [e.name, e]));
 	const rows = [];
 	for (const s of skills) {
-		const entry = installed.get(s.dir);
-		let source = null;
-		if (entry?.error) source = { status: `error: ${entry.error}` };
-		else if (entry) {
-			try {
-				const c = await check(entry, deps);
-				source = { url: entry.source.url, status: c.status, localEdits: c.edits };
-			} catch (err) {
-				source = { url: entry.source.url, status: `error: ${err.message}` };
-			}
-		}
 		const u = usage.get(s.dir);
 		rows.push({
 			skill: s.dir,
@@ -199,12 +208,8 @@ export async function auditData({ skillsDir, sessionDirs, windowDays = USAGE_WIN
 			words: s.text.split(/\s+/).filter(Boolean).length,
 			files: s.files,
 			lastChanged: (await lastChanged?.(s.dir)) ?? null,
-			source,
-			usage: {
-				sessions: u.sessions,
-				[`last${windowDays}Days`]: u.recent,
-				lastUsed: u.lastUsed?.toISOString().slice(0, 10) ?? null,
-			},
+			source: await sourceState(installed.get(s.dir), deps),
+			usage: { sessions: u.sessions, [`last${windowDays}Days`]: u.recent, lastUsed: u.lastUsed?.toISOString().slice(0, 10) ?? null },
 		});
 	}
 	return {
@@ -218,4 +223,16 @@ export async function auditData({ skillsDir, sessionDirs, windowDays = USAGE_WIN
 		skills: rows,
 		similarDescriptions: similarPairs(skills),
 	};
+}
+
+/** Link source state of an installed skill, null for a skill not installed from a link. */
+async function sourceState(entry, deps) {
+	if (!entry) return null;
+	if (entry.error) return { status: `error: ${entry.error}` };
+	try {
+		const c = await check(entry, deps);
+		return { url: entry.source.url, status: c.status, localEdits: c.edits };
+	} catch (err) {
+		return { url: entry.source.url, status: `error: ${err.message}` };
+	}
 }

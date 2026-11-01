@@ -40,24 +40,40 @@ export function findLinks(texts) {
  */
 export function findCommands(texts) {
 	const out = new Set();
-	const add = (word) => {
-		const name = word?.replace(/^\.\//, "").toLowerCase();
-		if (name && COMMAND.test(name) && !Object.hasOwn(BUILTINS, name)) out.add(name);
-	};
 	for (const text of Object.values(texts)) {
-		for (const block of text.matchAll(/^```([\w-]*)[^\n]*\n([\s\S]*?)^```/gm)) {
-			if (!Object.hasOwn(SHELL_LANGS, block[1].toLowerCase())) continue;
-			for (const raw of block[2].split("\n")) {
-				const words = raw.trim().replace(/^[$>%]\s+/, "").split(/\s+/);
-				if (!words[0] || words[0].startsWith("#") || words[0].includes("=")) continue;
-				add(Object.hasOwn(WRAPPERS, words[0]) && words[1] ? words[1] : words[0]);
-			}
+		for (const word of [...shellCommands(text), ...proseCommands(text)]) {
+			const name = word.replace(/^\.\//, "").toLowerCase();
+			if (COMMAND.test(name) && !Object.hasOwn(BUILTINS, name)) out.add(name);
 		}
-		const prose = /\b(?:use|run|install|requires?|needs?)\s+(?:the\s+)?`?([a-z][\w.+-]*)`?\s+(?:tool|cli|command|binary|utility)\b/gi;
-		for (const m of text.matchAll(prose)) add(m[1]);
-		for (const m of text.matchAll(/`([a-z][\w.+-]*)`\s+(?:tool|cli|command|binary)\b/gi)) add(m[1]);
 	}
 	return [...out].sort();
+}
+
+/** First word of each command line in the shell code blocks of text. */
+function shellCommands(text) {
+	const out = [];
+	for (const block of text.matchAll(/^```([\w-]*)[^\n]*\n([\s\S]*?)^```/gm)) {
+		if (!Object.hasOwn(SHELL_LANGS, block[1].toLowerCase())) continue;
+		for (const raw of block[2].split("\n")) {
+			const word = lineCommand(raw);
+			if (word) out.push(word);
+		}
+	}
+	return out;
+}
+
+/** Command a shell line runs, after a prompt and a wrapper such as sudo; null for blanks, comments, assignments. */
+function lineCommand(raw) {
+	const words = raw.trim().replace(/^[$>%]\s+/, "").split(/\s+/);
+	if (!words[0] || words[0].startsWith("#") || words[0].includes("=")) return null;
+	return Object.hasOwn(WRAPPERS, words[0]) && words[1] ? words[1] : words[0];
+}
+
+/** Names in phrases such as "use the X tool" or "`X` command". */
+function proseCommands(text) {
+	const prose = /\b(?:use|run|install|requires?|needs?)\s+(?:the\s+)?`?([a-z][\w.+-]*)`?\s+(?:tool|cli|command|binary|utility)\b/gi;
+	const ticked = /`([a-z][\w.+-]*)`\s+(?:tool|cli|command|binary)\b/gi;
+	return [...text.matchAll(prose), ...text.matchAll(ticked)].map((m) => m[1]);
 }
 
 /** Returns the full path of command in the directories of pathEnv, or null. */
@@ -118,61 +134,56 @@ function localTexts(dir) {
  * "upstream" or "local", depsScript the content of DEPS_FILE or null.
  */
 export async function analyze(target, { skillsDir, pathEnv, ...deps }) {
-	const isLink = /^https?:\/\//i.test(String(target).trim());
-	let origin;
-	let name;
-	let url = null;
-	let texts;
-	let files;
-	let note = null;
-	if (isLink) {
-		const p = await preview(target, deps);
-		({ name, texts, files } = p);
-		url = p.src.url;
-		origin = "upstream";
-	} else {
-		const dir = skillDir(skillsDir, target);
-		name = target;
-		let source = null;
-		try {
-			source = readSource(dir);
-		} catch (err) {
-			note = `source record unreadable: ${err.message}`;
-		}
-		url = source?.url ?? null;
-		if (source && source.updates !== false) {
-			try {
-				const p = await preview(source.url, deps);
-				({ texts, files } = p);
-				origin = "upstream";
-			} catch (err) {
-				note = `link not readable (${err.message}); local copy analysed`;
-			}
-		}
-		if (!texts) {
-			texts = localTexts(dir);
-			files = Object.keys(texts).sort();
-			origin = "local";
-		}
-	}
-	const dir = (() => {
-		try {
-			return skillDir(skillsDir, name);
-		} catch {
-			return null;
-		}
-	})();
+	const t = String(target).trim();
+	const found = /^https?:\/\//i.test(t) ? await fromLink(t, deps) : await fromInstalled(skillsDir, t, deps);
+	const dir = existingSkillDir(skillsDir, found.name);
 	const depsPath = dir && join(dir, DEPS_FILE);
 	return {
-		target: String(target).trim(),
-		origin,
-		...(note && { note }),
-		name,
-		url,
+		target: t,
+		origin: found.origin,
+		...(found.note && { note: found.note }),
+		name: found.name,
+		url: found.url,
 		installed: Boolean(dir),
 		depsScript: depsPath && fs.existsSync(depsPath) ? fs.readFileSync(depsPath, "utf8") : null,
-		files,
-		facts: dependencyFacts(texts, { skillsDir, self: name, pathEnv }),
-		texts,
+		files: found.files,
+		facts: dependencyFacts(found.texts, { skillsDir, self: found.name, pathEnv }),
+		texts: found.texts,
 	};
+}
+
+async function fromLink(url, deps) {
+	const p = await preview(url, deps);
+	return { origin: "upstream", name: p.name, url: p.src.url, texts: p.texts, files: p.files, note: null };
+}
+
+/** Reads an installed skill from its link when updates are on and the link works, else from disk. */
+async function fromInstalled(skillsDir, name, deps) {
+	const dir = skillDir(skillsDir, name);
+	let source = null;
+	let note = null;
+	try {
+		source = readSource(dir);
+	} catch (err) {
+		note = `source record unreadable: ${err.message}`;
+	}
+	const url = source?.url ?? null;
+	if (source && source.updates !== false) {
+		try {
+			const p = await preview(source.url, deps);
+			return { origin: "upstream", name, url, texts: p.texts, files: p.files, note };
+		} catch (err) {
+			note = `link not readable (${err.message}); local copy analysed`;
+		}
+	}
+	const texts = localTexts(dir);
+	return { origin: "local", name, url, texts, files: Object.keys(texts).sort(), note };
+}
+
+function existingSkillDir(skillsDir, name) {
+	try {
+		return skillDir(skillsDir, name);
+	} catch {
+		return null;
+	}
 }

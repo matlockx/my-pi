@@ -24,157 +24,28 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { analyze } from "./analyze.mjs";
 import { auditData, gitLastChanged } from "./audit.mjs";
-import { runDepsScript, sandboxBlocked, writeDepsScript } from "./deps.mjs";
-import {
-	DEPS_FILE,
-	describe,
-	exclude,
-	install,
-	listInstalled,
-	readSource,
-	relink,
-	remove,
-	skillDir,
-	update,
-} from "./sources.mjs";
+import { installOne, removeOne, runDeps, updateAll } from "./flows.mjs";
+import { DEPS_FILE, readSource, skillDir } from "./sources.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const SKILLS_DIR = join(REPO, "skills");
 const SESSION_DIRS = [join(homedir(), ".omp/agent/sessions"), join(homedir(), ".pi/agent/sessions")];
 
-const KEEP = "Keep the local copy and exclude it from updates";
-const RELINK = "Enter a corrected link";
-const SKIP = "Skip for now (ask again next update)";
-const OVERWRITE = "Overwrite local edits with the upstream version";
-const SKIP_EDITS = "Keep local edits, skip this update";
-const KEEP_EDITS = "Keep local edits and exclude it from updates";
-
-type Entry = { name: string; dir: string; source?: Record<string, any>; error?: string };
-type Result = { status: string; edits?: string[] };
-
 function deps(signal?: AbortSignal) {
-	return { fetch: globalThis.fetch, token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN, signal };
+	const token = process.env["GITHUB_TOKEN"] || process.env["GH_TOKEN"];
+	return { fetch: globalThis.fetch, token, signal };
 }
 
-function fresh(e: Entry): Entry {
-	return { ...e, source: readSource(e.dir) };
-}
-
-async function resolveEdits(ctx: ExtensionContext, e: Entry, r: Result, signal?: AbortSignal): Promise<string> {
-	if (!ctx.hasUI) return `${describe(r)}; run /skills-update in an interactive session to decide`;
-	const choice = await ctx.ui.select(
-		`${e.name}: upstream changed, local edits in ${r.edits?.join(", ")}`,
-		[OVERWRITE, SKIP_EDITS, KEEP_EDITS],
-	);
-	if (choice === OVERWRITE) return describe(await update(fresh(e), deps(signal), { overwrite: true }));
-	if (choice === KEEP_EDITS) {
-		exclude(fresh(e));
-		return "local edits kept; excluded from updates";
-	}
-	return "local edits kept; skipped this update";
-}
-
-async function resolveGone(ctx: ExtensionContext, e: Entry, signal?: AbortSignal): Promise<string> {
-	const url = e.source?.url;
-	if (!ctx.hasUI) return `source not found at ${url}; run /skills-update in an interactive session to keep or relink it`;
-	for (;;) {
-		const choice = await ctx.ui.select(`${e.name}: nothing found at ${url} (deleted, renamed, or private)`, [
-			KEEP,
-			RELINK,
-			SKIP,
-		]);
-		if (choice === KEEP) {
-			exclude(e);
-			return "source not found; local copy kept and excluded from updates";
-		}
-		if (choice !== RELINK) return `source not found at ${url}; skipped`;
-		const link = (await ctx.ui.input(`New GitHub link for ${e.name}`, url))?.trim();
-		if (!link) continue;
-		let r: Result;
-		try {
-			r = await relink(e, link, deps(signal));
-		} catch (err) {
-			ctx.ui.notify(`${e.name}: ${(err as Error).message}`, "error");
-			continue;
-		}
-		const done = r.status === "local-edits" ? await resolveEdits(ctx, e, r, signal) : describe(r);
-		return `relinked to ${link}; ${done}`;
-	}
-}
-
-async function updateOne(ctx: ExtensionContext, e: Entry, signal?: AbortSignal): Promise<string> {
-	if (e.error) return `error: ${e.error}`;
-	let r: Result;
-	try {
-		r = await update(e, deps(signal));
-	} catch (err) {
-		return `error: ${(err as Error).message}`;
-	}
-	if (r.status === "gone") return resolveGone(ctx, e, signal);
-	if (r.status === "local-edits") return resolveEdits(ctx, e, r, signal);
-	return describe(r);
-}
-
-async function updateAll(ctx: ExtensionContext, signal?: AbortSignal): Promise<string> {
-	const entries: Entry[] = listInstalled(SKILLS_DIR);
-	if (!entries.length) return `No skills installed from GitHub links in ${SKILLS_DIR}.`;
-	const lines: string[] = [];
-	for (const e of entries) lines.push(`${e.name}: ${await updateOne(ctx, e, signal)}`);
-	return lines.join("\n");
-}
-
-async function installOne(
-	ctx: ExtensionContext,
-	url: string,
-	name: string | undefined,
-	signal?: AbortSignal,
-): Promise<string> {
-	const r = await install(url, { skillsDir: SKILLS_DIR, name, ...deps(signal) });
-	const done =
-		r.status === "local-edits"
-			? await resolveEdits(ctx, { name: r.name, dir: r.dir, source: readSource(r.dir) }, r, signal)
-			: describe(r);
-	return `${r.name} (${r.dir}): ${done}`;
-}
-
-async function runDeps(ctx: ExtensionContext, name: string, script: string | undefined, signal?: AbortSignal) {
-	const dir = skillDir(SKILLS_DIR, name);
-	const file = script ? writeDepsScript(dir, script) : join(dir, DEPS_FILE);
-	if (!fs.existsSync(file)) throw new Error(`${file} does not exist; pass the script`);
-	const host = `Run it in a host shell: bash '${file}'`;
-	if (!ctx.hasUI) return `${file} not run: no UI available to ask for permission. ${host}`;
-	const ok = await ctx.ui.confirm(
-		`Run the dependency install script for ${name} now?`,
-		`${file}\n\nNo: nothing runs; you get the command to run it yourself.\n\n${fs.readFileSync(file, "utf8")}`,
-	);
-	if (!ok) return `${file} not run: the user declined. ${host}`;
-	const r = await runDepsScript(file, { signal });
-	const status = r.timedOut ? "timed out" : r.code === 0 ? "succeeded" : `failed (exit ${r.code ?? r.signal})`;
-	const hint =
-		r.code === 0
-			? ""
-			: sandboxBlocked(r.output)
-				? `\nThe run was blocked by the sandbox or file permissions. ${host}`
-				: `\nIf this failed because of the sandbox, run it in a host shell: bash '${file}'`;
-	return `${file} ${status}.${hint}\n--- output (last part) ---\n${r.output}`;
-}
-
-async function removeOne(ctx: ExtensionContext, name: string): Promise<string> {
-	if (!ctx.hasUI) throw new Error(`skill ${name} not deleted: no UI available for the confirmation`);
-	const r = await remove(SKILLS_DIR, name, ({ dir, url }) =>
-		ctx.ui.confirm(
-			`Delete skill ${name}?`,
-			`${dir}\n\n${url ? `Installed from ${url}; /skill-install can bring it back.` : "Not installed from a link; only git can restore it, and only if it was committed."}`,
-		),
-	);
-	return r.deleted ? `deleted ${r.dir}` : `skill ${name} kept: deletion declined`;
+// DEV-NOTE: the dialog flows live in flows.mjs so they can be tested with a fake UI;
+// this file only registers tools and commands and builds the env they run in.
+function env(ctx: ExtensionContext, signal?: AbortSignal) {
+	return { skillsDir: SKILLS_DIR, ui: ctx.hasUI ? ctx.ui : null, deps: deps(signal) };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -213,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!analysed.has(params.url.trim()))
 				throw new Error(`not installed: run skill_analyze on ${params.url} first and report its dependencies to the user`);
-			return { content: [{ type: "text", text: await installOne(ctx, params.url, params.name, signal) }], details: {} };
+			return { content: [{ type: "text", text: await installOne(env(ctx, signal), params.url, params.name) }], details: {} };
 		},
 	});
 
@@ -230,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 			if (!source) throw new Error(`${params.name} was not installed from a link; nothing to fetch`);
 			if (!analysed.has(params.name) && !analysed.has(source.url))
 				throw new Error(`not re-installed: run skill_analyze on ${params.name} first and report its dependencies to the user`);
-			return { content: [{ type: "text", text: await installOne(ctx, source.url, params.name, signal) }], details: {} };
+			return { content: [{ type: "text", text: await installOne(env(ctx, signal), source.url, params.name) }], details: {} };
 		},
 	});
 
@@ -247,7 +118,7 @@ export default function (pi: ExtensionAPI) {
 			script: Type.Optional(Type.String({ description: "Full bash script; replaces the existing file" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			return { content: [{ type: "text", text: await runDeps(ctx, params.name, params.script, signal) }], details: {} };
+			return { content: [{ type: "text", text: await runDeps(env(ctx, signal), params.name, params.script) }], details: {} };
 		},
 	});
 
@@ -259,7 +130,7 @@ export default function (pi: ExtensionAPI) {
 			"user asks to update skills. Asks the user when a source is gone or local edits would be overwritten.",
 		parameters: Type.Object({}),
 		async execute(_id, _params, signal, _onUpdate, ctx) {
-			return { content: [{ type: "text", text: await updateAll(ctx, signal) }], details: {} };
+			return { content: [{ type: "text", text: await updateAll(env(ctx, signal)) }], details: {} };
 		},
 	});
 
@@ -271,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 			"do not ask for confirmation separately.",
 		parameters: Type.Object({ name: Type.String({ description: "Skill directory name under my-pi/skills" }) }),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return { content: [{ type: "text", text: await removeOne(ctx, params.name) }], details: {} };
+			return { content: [{ type: "text", text: await removeOne(env(ctx), params.name) }], details: {} };
 		},
 	});
 
@@ -297,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("skills-update", {
 		description: "Update every skill installed from a GitHub link",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify(await updateAll(ctx), "info");
+			ctx.ui.notify(await updateAll(env(ctx)), "info");
 		},
 	});
 
@@ -307,7 +178,7 @@ export default function (pi: ExtensionAPI) {
 			const name = args.trim();
 			if (!name) return ctx.ui.notify("usage: /skill-remove <name>", "warning");
 			try {
-				ctx.ui.notify(await removeOne(ctx, name), "info");
+				ctx.ui.notify(await removeOne(env(ctx), name), "info");
 			} catch (err) {
 				ctx.ui.notify(`skill remove failed: ${(err as Error).message}`, "error");
 			}

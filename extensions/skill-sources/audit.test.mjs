@@ -52,6 +52,16 @@ test("listSkills reads front matter and counts files, skipping directories witho
 	);
 });
 
+test("listSkills returns nothing for a missing directory and falls back to the directory name", (t) => {
+	const { root, skillsDir } = fixture(t);
+	fs.mkdirSync(join(skillsDir, "bare"));
+	fs.writeFileSync(join(skillsDir, "bare/SKILL.md"), "# no front matter");
+
+	assert.deepEqual(listSkills(join(root, "missing")), []);
+	const bare = listSkills(skillsDir).find((s) => s.dir === "bare");
+	assert.deepEqual([bare.name, bare.description, bare.files], ["bare", "", 1]);
+});
+
 test("skillUsage counts sessions per skill from reads, skill:// and invocations, once per session", async (t) => {
 	const { skillsDir, sessions, session } = fixture(t);
 	session("p1/a.jsonl", [
@@ -122,4 +132,18 @@ test("auditData combines usage, last change, source state and similar descriptio
 	assert.match(bySkill.plan.source.status, /^error: .*unreadable/);
 	assert.equal(calls.length, 1);
 	assert.deepEqual(data.similarDescriptions.map((p) => [p.a, p.b]), [["golang", "unused"]]);
+});
+
+test("auditData reports a failed source check as an error and works without lastChanged", async (t) => {
+	const { skillsDir, sessions } = fixture(t);
+	const source = { url: "https://github.com/o/r/tree/main/unused", owner: "o", repo: "r", ref: "main", path: "unused", kind: "dir", updates: true, files: {} };
+	fs.writeFileSync(join(skillsDir, "unused", SOURCE_FILE), JSON.stringify(source));
+
+	const data = await auditData({ skillsDir, sessionDirs: [sessions], fetch: async () => new Response("", { status: 500 }) });
+
+	const unused = data.skills.find((s) => s.skill === "unused");
+	assert.deepEqual(unused.source, { url: source.url, status: "error: GitHub API /repos/o/r/git/trees/main:unused?recursive=1 answered 500" });
+	assert.equal(unused.lastChanged, null);
+	assert.deepEqual(unused.usage, { sessions: 0, last90Days: 0, lastUsed: null });
+	assert.equal(data.sessionLogs.oldestFile, null);
 });

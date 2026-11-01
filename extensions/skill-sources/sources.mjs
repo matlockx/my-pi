@@ -37,23 +37,29 @@ export function parseGitHubUrl(input) {
 	} catch {
 		throw new Error(`not a URL: ${input}`);
 	}
-	const segs = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-	if (u.hostname === "github.com" || u.hostname === "www.github.com") {
-		const [owner, repoSeg, mode, ...rest] = segs;
-		if (!owner || !repoSeg) throw new Error(`GitHub link without owner and repository: ${input}`);
-		const repo = repoSeg.replace(/\.git$/, "");
-		if (mode === undefined) return { owner, repo, kind: "dir", rest: [] };
-		if ((mode === "tree" || mode === "blob") && rest.length)
-			return { owner, repo, kind: mode === "tree" ? "dir" : "file", rest };
-		throw new Error(`unsupported GitHub link, expected .../tree/<ref>/<dir> or .../blob/<ref>/<file>: ${input}`);
-	}
-	if (u.hostname === "raw.githubusercontent.com") {
-		const [owner, repo, ...rest] = segs;
-		if (!owner || !repo || rest.length < 2) throw new Error(`raw link without ref and file path: ${input}`);
-		return { owner, repo, kind: "file", rest };
-	}
-	throw new Error(`not a GitHub link: ${input}`);
+	if (!Object.hasOwn(HOST_PARSERS, u.hostname)) throw new Error(`not a GitHub link: ${input}`);
+	return HOST_PARSERS[u.hostname](u.pathname.split("/").filter(Boolean).map(decodeURIComponent), input);
 }
+
+function parseGitHubPath([owner, repoSeg, mode, ...rest], input) {
+	if (!owner || !repoSeg) throw new Error(`GitHub link without owner and repository: ${input}`);
+	const repo = repoSeg.replace(/\.git$/, "");
+	if (mode === undefined) return { owner, repo, kind: "dir", rest: [] };
+	if ((mode === "tree" || mode === "blob") && rest.length)
+		return { owner, repo, kind: mode === "tree" ? "dir" : "file", rest };
+	throw new Error(`unsupported GitHub link, expected .../tree/<ref>/<dir> or .../blob/<ref>/<file>: ${input}`);
+}
+
+function parseRawPath([owner, repo, ...rest], input) {
+	if (!owner || !repo || rest.length < 2) throw new Error(`raw link without ref and file path: ${input}`);
+	return { owner, repo, kind: "file", rest };
+}
+
+const HOST_PARSERS = {
+	"github.com": parseGitHubPath,
+	"www.github.com": parseGitHubPath,
+	"raw.githubusercontent.com": parseRawPath,
+};
 
 /**
  * Lists the possible (ref, path) splits of a parsed link, shortest ref first.
@@ -85,13 +91,18 @@ async function api(deps, path) {
 	});
 	if (res.ok) return res.json();
 	if (res.status === 404 || res.status === 409 || res.status === 422) return null;
+	throw apiError(res, path);
+}
+
+/** Builds the error for a failed API response: rate limit, rejected token, or the bare status. */
+function apiError(res, path) {
 	if ((res.status === 403 || res.status === 429) && res.headers.get("x-ratelimit-remaining") === "0") {
 		const reset = Number(res.headers.get("x-ratelimit-reset"));
 		const until = reset ? ` until ${new Date(reset * 1000).toLocaleTimeString()}` : "";
-		throw new Error(`GitHub API rate limit reached${until}; set GITHUB_TOKEN for a higher limit`);
+		return new Error(`GitHub API rate limit reached${until}; set GITHUB_TOKEN for a higher limit`);
 	}
-	if (res.status === 401) throw new Error("GitHub rejected the token in GITHUB_TOKEN/GH_TOKEN (401)");
-	throw new Error(`GitHub API ${path} answered ${res.status}`);
+	if (res.status === 401) return new Error("GitHub rejected the token in GITHUB_TOKEN/GH_TOKEN (401)");
+	return new Error(`GitHub API ${path} answered ${res.status}`);
 }
 
 /** Fetches a tree listing (ref:path); null when the ref or path does not exist. */
@@ -111,28 +122,39 @@ function tree(deps, src, path, recursive) {
  * submodules and upstream copies of the local-only files are listed in skipped
  * and never installed.
  */
-export async function fetchUpstream(src, deps) {
-	if (src.kind === "file") {
-		const parent = posix.dirname(src.path);
-		const listing = await tree(deps, src, parent === "." ? "" : parent, false);
-		const entry = listing?.tree?.find((e) => e.path === posix.basename(src.path) && e.type === "blob");
-		if (!entry) return null;
-		return { files: { "SKILL.md": { sha: entry.sha, mode: entry.mode, size: entry.size, from: src.path } }, skipped: [] };
-	}
+export function fetchUpstream(src, deps) {
+	return src.kind === "file" ? fetchUpstreamFile(src, deps) : fetchUpstreamDir(src, deps);
+}
+
+async function fetchUpstreamFile(src, deps) {
+	const parent = posix.dirname(src.path);
+	const listing = await tree(deps, src, parent === "." ? "" : parent, false);
+	const entry = listing?.tree?.find((e) => e.path === posix.basename(src.path) && e.type === "blob");
+	if (!entry) return null;
+	return { files: { "SKILL.md": { sha: entry.sha, mode: entry.mode, size: entry.size, from: src.path } }, skipped: [] };
+}
+
+async function fetchUpstreamDir(src, deps) {
 	const listing = await tree(deps, src, src.path, true);
 	if (!listing) return null;
 	if (listing.truncated) throw new Error(`${src.path || src.repo} has too many files for one GitHub tree listing`);
+	const up = treeFiles(listing.tree ?? [], src.path);
+	if (!up.files["SKILL.md"]) throw new Error(`no SKILL.md at the top of ${src.path || `${src.owner}/${src.repo}`}`);
+	return up;
+}
+
+/** Splits tree entries below base into installable files and skipped paths. */
+function treeFiles(entries, base) {
 	const files = {};
 	const skipped = [];
-	for (const e of listing.tree ?? []) {
+	for (const e of entries) {
 		if (e.type === "tree") continue;
 		if (e.type !== "blob" || e.mode === "120000" || Object.hasOwn(LOCAL_FILES, e.path)) {
 			skipped.push(e.path);
 			continue;
 		}
-		files[e.path] = { sha: e.sha, mode: e.mode, size: e.size, from: src.path ? `${src.path}/${e.path}` : e.path };
+		files[e.path] = { sha: e.sha, mode: e.mode, size: e.size, from: base ? `${base}/${e.path}` : e.path };
 	}
-	if (!files["SKILL.md"]) throw new Error(`no SKILL.md at the top of ${src.path || `${src.owner}/${src.repo}`}`);
 	return { files, skipped };
 }
 
@@ -166,17 +188,24 @@ async function resolve(url, deps) {
  */
 export async function preview(url, { maxFileBytes = 200_000, maxTotalBytes = 2_000_000, ...deps } = {}) {
 	const { src, up } = await resolve(url, deps);
+	const texts = await fetchTexts(deps, src, up.files, maxFileBytes, maxTotalBytes);
+	const name = skillName(texts["SKILL.md"] ?? "", fallbackName(src));
+	return { src, name, files: Object.keys(up.files).sort(), texts };
+}
+
+/** Downloads the text files of files, SKILL.md first and always, the rest within the byte limits. */
+async function fetchTexts(deps, src, files, maxFileBytes, maxTotalBytes) {
 	const texts = {};
 	let total = 0;
-	for (const rel of Object.keys(up.files).sort((a, b) => (a === "SKILL.md" ? -1 : b === "SKILL.md" ? 1 : a.localeCompare(b)))) {
-		const size = up.files[rel].size ?? 0;
+	const order = (a, b) => Number(b === "SKILL.md") - Number(a === "SKILL.md") || a.localeCompare(b);
+	for (const rel of Object.keys(files).sort(order)) {
+		const size = files[rel].size;
 		if (rel !== "SKILL.md" && (size > maxFileBytes || total + size > maxTotalBytes)) continue;
-		const buf = await download(deps, src, up.files[rel]);
+		const buf = await download(deps, src, files[rel]);
 		total += buf.length;
 		if (!buf.includes(0)) texts[rel] = buf.toString("utf8");
 	}
-	const name = skillName(texts["SKILL.md"] ?? "", fallbackName(src));
-	return { src, name, files: Object.keys(up.files).sort(), texts };
+	return texts;
 }
 
 /** Maps a relative upstream path into dir; null for paths that would leave it or clobber a local-only file. */
@@ -284,24 +313,44 @@ function pruneEmpty(dir, from) {
  * written), or "updated" with the changed and removed paths.
  */
 async function sync(dir, src, up, deps, overwrite, prefetched = new Map()) {
-	const recorded = src.files ?? {};
-	const edits = localEdits(dir, recorded);
-	const removed = Object.keys(recorded).filter((rel) => !(rel in up.files));
-	const changed = Object.keys(up.files).filter((rel) => recorded[rel] !== up.files[rel].sha);
+	const { edits, removed, changed } = syncPlan(dir, src.files ?? {}, up.files);
 	if (!changed.length && !removed.length) return { status: "current", edits, skipped: up.skipped };
 	if (edits.length && !overwrite) return { status: "local-edits", edits, skipped: up.skipped };
 	const write = [...new Set([...changed, ...edits.filter((rel) => rel in up.files)])].sort();
-	const blobs = new Map();
 	// DEV-NOTE: every download is verified before the first write, so a failed or
 	// raced download leaves the installed skill and its record untouched.
-	for (const rel of write) blobs.set(rel, prefetched.get(rel) ?? (await download(deps, src, up.files[rel])));
+	const blobs = await fetchBlobs(deps, src, up.files, write, prefetched);
+	writeSync(dir, up.files, blobs, removed);
+	const files = Object.fromEntries(Object.entries(up.files).map(([rel, f]) => [rel, f.sha]));
+	writeSource(dir, { ...src, files, updatedAt: (deps.now?.() ?? new Date()).toISOString() });
+	return { status: "updated", changed: write, removed: removed.sort(), skipped: up.skipped };
+}
+
+/** Downloads the blobs of rels, reusing the already downloaded ones in prefetched. */
+async function fetchBlobs(deps, src, files, rels, prefetched) {
+	const blobs = new Map();
+	for (const rel of rels) blobs.set(rel, prefetched.get(rel) ?? (await download(deps, src, files[rel])));
+	return blobs;
+}
+
+/** Compares the recorded SHAs with upstream: locally edited, upstream-removed and upstream-changed paths. */
+function syncPlan(dir, recorded, upstream) {
+	return {
+		edits: localEdits(dir, recorded),
+		removed: Object.keys(recorded).filter((rel) => !(rel in upstream)),
+		changed: Object.keys(upstream).filter((rel) => recorded[rel] !== upstream[rel].sha),
+	};
+}
+
+/** Writes the downloaded blobs with their file modes and deletes the removed paths. */
+function writeSync(dir, files, blobs, removed) {
 	fs.mkdirSync(dir, { recursive: true });
 	for (const [rel, buf] of blobs) {
 		const p = target(dir, rel);
 		if (!p) continue;
 		fs.mkdirSync(dirname(p), { recursive: true });
 		fs.writeFileSync(p, buf);
-		fs.chmodSync(p, up.files[rel].mode === "100755" ? 0o755 : 0o644);
+		fs.chmodSync(p, files[rel].mode === "100755" ? 0o755 : 0o644);
 	}
 	for (const rel of removed) {
 		const p = target(dir, rel);
@@ -309,9 +358,6 @@ async function sync(dir, src, up, deps, overwrite, prefetched = new Map()) {
 		fs.rmSync(p, { force: true });
 		pruneEmpty(dir, dirname(p));
 	}
-	const files = Object.fromEntries(Object.entries(up.files).map(([rel, f]) => [rel, f.sha]));
-	writeSource(dir, { ...src, files, updatedAt: (deps.now?.() ?? new Date()).toISOString() });
-	return { status: "updated", changed: write, removed: removed.sort(), skipped: up.skipped };
 }
 
 /**
@@ -323,15 +369,9 @@ async function sync(dir, src, up, deps, overwrite, prefetched = new Map()) {
 export async function install(url, { skillsDir, name, ...deps }) {
 	const { src, up } = await resolve(url, deps);
 	const skillMd = await download(deps, src, up.files["SKILL.md"]);
-	const derived = skillName(skillMd.toString("utf8"), fallbackName(src));
-	const finalName = name ? sanitiseName(name) : derived;
-	if (!finalName) throw new Error(`invalid skill name: ${name}`);
+	const finalName = installName(name, skillMd.toString("utf8"), src);
 	const dir = join(skillsDir, finalName);
-	const existing = fs.existsSync(dir) ? readSource(dir) : null;
-	if (fs.existsSync(dir) && !existing)
-		throw new Error(`${dir} exists and was not installed from a link; pass another name`);
-	if (existing && (existing.owner !== src.owner || existing.repo !== src.repo || existing.path !== src.path))
-		throw new Error(`skill ${finalName} is installed from ${existing.url}; pass another name, or change its link via the update`);
+	const existing = existingInstall(dir, src, finalName);
 	const record = { ...src, updates: true, files: existing?.files ?? {} };
 	try {
 		const result = await sync(dir, record, up, deps, false, new Map([["SKILL.md", skillMd]]));
@@ -341,6 +381,27 @@ export async function install(url, { skillsDir, name, ...deps }) {
 		if (!existing) fs.rmSync(dir, { recursive: true, force: true });
 		throw err;
 	}
+}
+
+/** Returns the directory name for an install: name sanitised, else the front matter name. */
+function installName(name, skillMd, src) {
+	const derived = skillName(skillMd, fallbackName(src));
+	const finalName = name ? sanitiseName(name) : derived;
+	if (!finalName) throw new Error(`invalid skill name: ${name}`);
+	return finalName;
+}
+
+/**
+ * Returns the source record when dir holds an install of the same source, null
+ * when dir does not exist; throws when dir holds anything else.
+ */
+function existingInstall(dir, src, name) {
+	if (!fs.existsSync(dir)) return null;
+	const existing = readSource(dir);
+	if (!existing) throw new Error(`${dir} exists and was not installed from a link; pass another name`);
+	if (existing.owner !== src.owner || existing.repo !== src.repo || existing.path !== src.path)
+		throw new Error(`skill ${name} is installed from ${existing.url}; pass another name, or change its link via the update`);
+	return existing;
 }
 
 /**
@@ -432,23 +493,20 @@ export async function relink(entry, url, deps, { overwrite = false } = {}) {
 
 /** One-line description of a sync or update result. */
 export function describe(r) {
-	const skipped = r.skipped?.length ? `; skipped symlinks/submodules: ${r.skipped.join(", ")}` : "";
-	switch (r.status) {
-		case "excluded":
-			return "excluded from updates";
-		case "gone":
-			return "source not found";
-		case "current":
-			return `up to date${r.edits.length ? `; local edits kept in ${r.edits.join(", ")}` : ""}${skipped}`;
-		case "local-edits":
-			return `upstream changed, not updated because of local edits in ${r.edits.join(", ")}`;
-		case "updated": {
-			const parts = [];
-			if (r.changed.length) parts.push(`wrote ${r.changed.join(", ")}`);
-			if (r.removed.length) parts.push(`removed ${r.removed.join(", ")}`);
-			return `updated: ${parts.join("; ")}${skipped}`;
-		}
-		default:
-			return r.status;
-	}
+	const text = Object.hasOwn(DESCRIPTIONS, r.status) ? DESCRIPTIONS[r.status](r) : r.status;
+	const listsSkipped = (r.status === "current" || r.status === "updated") && r.skipped?.length;
+	return listsSkipped ? `${text}; skipped symlinks/submodules: ${r.skipped.join(", ")}` : text;
 }
+
+const DESCRIPTIONS = {
+	excluded: () => "excluded from updates",
+	gone: () => "source not found",
+	current: (r) => `up to date${r.edits.length ? `; local edits kept in ${r.edits.join(", ")}` : ""}`,
+	"local-edits": (r) => `upstream changed, not updated because of local edits in ${r.edits.join(", ")}`,
+	updated: (r) => {
+		const parts = [];
+		if (r.changed.length) parts.push(`wrote ${r.changed.join(", ")}`);
+		if (r.removed.length) parts.push(`removed ${r.removed.join(", ")}`);
+		return `updated: ${parts.join("; ")}`;
+	},
+};

@@ -22,57 +22,7 @@ import {
 	remove,
 	update,
 } from "./sources.mjs";
-
-const SKILL = (name, body = "Body.") => `---\nname: ${name}\ndescription: Test skill.\n---\n\n${body}\n`;
-
-/**
- * Fake GitHub serving the trees API and raw downloads from state.repos:
- * { "<owner>/<repo>": { HEAD: "<default ref>", refs: { "<ref>": { "<path>": text | { text, mode } } } } }.
- */
-function fakeGitHub(state) {
-	const calls = [];
-	const text = (c) => (typeof c === "string" ? c : c.text);
-	const resp = (status, body = "", headers = {}) => new Response(body, { status, headers });
-	const refsOf = (repo, ref) => repo?.refs[ref === "HEAD" ? repo.HEAD : ref];
-	const fetch = async (url) => {
-		calls.push(url);
-		const u = new URL(url);
-		if (u.hostname === "api.github.com") {
-			if (state.rateLimited) return resp(403, "", { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "0" });
-			const m = /^\/repos\/([^/]+)\/([^/]+)\/git\/trees\/(.+)$/.exec(u.pathname);
-			const spec = decodeURIComponent(m[3]);
-			const i = spec.indexOf(":");
-			const files = refsOf(state.repos[`${m[1]}/${m[2]}`], i < 0 ? spec : spec.slice(0, i));
-			const prefix = i < 0 || !spec.slice(i + 1) ? "" : `${spec.slice(i + 1)}/`;
-			if (!files) return resp(404);
-			const below = Object.entries(files).filter(([p]) => p.startsWith(prefix));
-			if (!below.length) return resp(404);
-			const recursive = u.searchParams.has("recursive");
-			const tree = [];
-			const dirs = new Set();
-			for (const [p, c] of below) {
-				const rel = p.slice(prefix.length);
-				if (!recursive && rel.includes("/")) {
-					dirs.add(rel.split("/")[0]);
-					continue;
-				}
-				const buf = Buffer.from(text(c));
-				tree.push({ path: rel, type: "blob", mode: c.mode ?? "100644", sha: blobSha(buf), size: buf.length });
-			}
-			for (const d of dirs) tree.push({ path: d, type: "tree", mode: "040000", sha: "t" });
-			return Response.json({ sha: "root", tree, truncated: false });
-		}
-		const [owner, repoName, ...rest] = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-		const repo = state.repos[`${owner}/${repoName}`];
-		for (let i = 1; i < rest.length; i++) {
-			const files = refsOf(repo, rest.slice(0, i).join("/"));
-			const c = files?.[rest.slice(i).join("/")];
-			if (c !== undefined) return resp(200, state.corrupt ? "tampered" : text(c));
-		}
-		return resp(404);
-	};
-	return { fetch, calls, apiCalls: () => calls.filter((c) => c.startsWith("https://api.github.com")).length };
-}
+import { SKILL, fakeGitHub } from "./test/fake-github.mjs";
 
 function setup(t, repos) {
 	const skillsDir = fs.mkdtempSync(join(os.tmpdir(), "skill-sources-"));
@@ -260,12 +210,69 @@ test("a download that does not match its blob SHA writes nothing", async (t) => 
 	assert.equal(fs.readFileSync(join(skillsDir, "s", SOURCE_FILE), "utf8"), sourceBefore);
 });
 
-test("a rate limit is an error, not a gone source", async (t) => {
+test("API failures are errors with their cause, not a gone source", async (t) => {
 	const { skillsDir, state, deps } = setup(t, { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s") } } } });
 	await install("https://github.com/o/r/tree/main/s", { skillsDir, ...deps });
-	state.rateLimited = true;
+	const cases = [
+		[{ status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "0" } }, /GitHub API rate limit reached; set GITHUB_TOKEN/],
+		[{ status: 429, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1798000000" } }, /rate limit reached until .+; set/],
+		[{ status: 403, headers: {} }, /answered 403$/],
+		[{ status: 401, headers: {} }, /rejected the token in GITHUB_TOKEN\/GH_TOKEN \(401\)/],
+		[{ status: 500, headers: {} }, /GitHub API \/repos\/o\/r\/git\/trees\/main:s\?recursive=1 answered 500$/],
+	];
 
-	await assert.rejects(update(entry(skillsDir, "s"), deps), /rate limit reached/);
+	for (const [apiStatus, message] of cases) {
+		state.apiStatus = apiStatus;
+		await assert.rejects(update(entry(skillsDir, "s"), deps), message);
+	}
+});
+
+test("tree listings that are truncated or lack SKILL.md are refused", async (t) => {
+	const { skillsDir, state, deps } = setup(t, { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s"), "d/x.md": "x" } } } });
+
+	await assert.rejects(install("https://github.com/o/r/tree/main/d", { skillsDir, ...deps }), /no SKILL.md at the top of d/);
+	state.truncated = true;
+	await assert.rejects(install("https://github.com/o/r/tree/main/s", { skillsDir, ...deps }), /s has too many files/);
+	assert.deepEqual(fs.readdirSync(skillsDir), []);
+});
+
+test("installs a repository root and a file link at the repository root", async (t) => {
+	const { skillsDir, deps } = setup(t, {
+		"o/whole": { HEAD: "main", refs: { main: { "SKILL.md": SKILL("whole"), "ref/a.md": "a" } } },
+		"o/single": { HEAD: "main", refs: { main: { "SKILL.md": SKILL("single") } } },
+	});
+
+	const whole = await install("https://github.com/o/whole", { skillsDir, ...deps });
+	const single = await install("https://github.com/o/single/blob/main/SKILL.md", { skillsDir, ...deps });
+
+	assert.equal(whole.name, "whole");
+	assert.equal(readSource(join(skillsDir, "whole")).ref, null);
+	assert.equal(fs.readFileSync(join(skillsDir, "whole/ref/a.md"), "utf8"), "a");
+	assert.equal(single.name, "single");
+	assert.equal(readSource(join(skillsDir, "single")).path, "SKILL.md");
+});
+
+test("install refuses a name that sanitises to nothing", async (t) => {
+	const { skillsDir, deps } = setup(t, { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s") } } } });
+
+	await assert.rejects(install("https://github.com/o/r/tree/main/s", { skillsDir, name: "!!!", ...deps }), /invalid skill name: !!!/);
+});
+
+test("describe names every result status and lists skipped paths only for current and updated", () => {
+	const skipped = ["link"];
+	assert.equal(describe({ status: "excluded" }), "excluded from updates");
+	assert.equal(describe({ status: "gone" }), "source not found");
+	assert.equal(describe({ status: "current", edits: [], skipped }), "up to date; skipped symlinks/submodules: link");
+	assert.equal(describe({ status: "current", edits: ["a.md"], skipped: [] }), "up to date; local edits kept in a.md");
+	assert.equal(
+		describe({ status: "local-edits", edits: ["a.md"], skipped }),
+		"upstream changed, not updated because of local edits in a.md",
+	);
+	assert.equal(
+		describe({ status: "updated", changed: ["a.md"], removed: ["b.md"], skipped }),
+		"updated: wrote a.md; removed b.md; skipped symlinks/submodules: link",
+	);
+	assert.equal(describe({ status: "behind" }), "behind");
 });
 
 test("relink saves the new link, keeps edit detection and syncs from the new source", async (t) => {
@@ -412,6 +419,9 @@ test("preview reads the text files behind a link without writing, skipping binar
 	assert.deepEqual(p.files, ["SKILL.md", "big.md", "img.bin", "ref/a.md"]);
 	assert.deepEqual(Object.keys(p.texts).sort(), ["SKILL.md", "ref/a.md"]);
 	assert.deepEqual(fs.readdirSync(skillsDir), []);
+
+	const capped = await preview("https://github.com/o/r/tree/main/s", { maxTotalBytes: 10, ...deps });
+	assert.deepEqual(Object.keys(capped.texts), ["SKILL.md"]);
 });
 
 test("an upstream .skill-deps.sh is never installed, and update keeps and never removes the local one", async (t) => {
