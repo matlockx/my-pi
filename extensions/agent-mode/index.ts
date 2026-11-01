@@ -13,7 +13,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { newestOfFamily } from "./models.mjs";
+import { pickModel } from "./models.mjs";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -57,38 +57,6 @@ const MODE_DEFAULTS: Record<AgentMode, { family: string; thinking: string }> = {
 	plan: { family: "opus", thinking: "high" },
 	build: { family: "sonnet", thinking: "medium" },
 };
-
-// ── Model resolution ──────────────────────────────────────────────────
-
-function parseModelSpec(spec: string): { provider?: string; modelId: string } {
-	const parts = spec.split("/");
-	if (parts.length >= 2) {
-		return { provider: parts[0], modelId: parts.slice(1).join("/") };
-	}
-	return { modelId: spec };
-}
-
-function findModel(ctx: ExtensionContext, config: ModeConfig | null, mode: AgentMode) {
-	const available = ctx.modelRegistry.getAvailable();
-	if (available.length === 0) return null;
-
-	// Try explicit config first
-	if (config?.model) {
-		const { provider, modelId } = parseModelSpec(config.model);
-		if (provider) {
-			const exact = ctx.modelRegistry.find(provider, modelId);
-			if (exact) return exact;
-		}
-		// Fuzzy match on model id
-		const match = available.find(
-			(m) => m.id.includes(modelId) || m.name.toLowerCase().includes(modelId.toLowerCase()),
-		);
-		if (match) return match;
-	}
-
-	// Fall back to the newest model of the mode's family
-	return newestOfFamily(available, MODE_DEFAULTS[mode].family, ctx.model?.provider);
-}
 
 // ── Extension ─────────────────────────────────────────────────────────
 
@@ -196,7 +164,14 @@ export default function agentModeExtension(pi: ExtensionAPI) {
 
 		// No memory — find a default model for this mode
 		const config = loadModeConfig(ctx.cwd, targetMode);
-		const defaultModel = findModel(ctx, config, targetMode);
+		// DEV-NOTE: find() searches the whole registry so a configured model without credentials
+		// is still chosen and reported as "no API key" below instead of silently replaced.
+		const defaultModel = pickModel(
+			{ available: ctx.modelRegistry.getAvailable(), find: (p: string, id: string) => ctx.modelRegistry.find(p, id) },
+			config?.model,
+			MODE_DEFAULTS[targetMode].family,
+			ctx.model?.provider,
+		);
 
 		if (defaultModel) {
 			const ok = await pi.setModel(defaultModel);

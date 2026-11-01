@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { newestOfFamily, parseModelId } from "./models.mjs";
+import { newestOfFamily, parseModelId, pickModel } from "./models.mjs";
 
 // Model ids as reported by omp 18.11.1's registry on 2026-11-01, in its order.
 const REGISTRY = [
@@ -67,4 +67,39 @@ test("on equal versions the undated alias wins, then the preferred provider", ()
 	assert.equal(newestOfFamily(providers, "opus", "anthropic").provider, "anthropic");
 	assert.equal(newestOfFamily(providers, "opus", "openrouter").provider, "openrouter");
 	assert.equal(newestOfFamily(providers, "opus").provider, "openrouter");
+});
+
+test("pickModel takes an exact provider/id from the whole registry, even without credentials", () => {
+	const keyless = { provider: "openai", id: "o3", name: "o3" };
+	const find = (provider, id) => (provider === "openai" && id === "o3" ? keyless : null);
+
+	assert.equal(pickModel({ available: REGISTRY, find }, "openai/o3", "opus"), keyless);
+});
+
+test("pickModel falls back from a configured id to the newest match, then to the family", () => {
+	const registry = { available: REGISTRY, find: () => null };
+
+	assert.equal(pickModel(registry, "anthropic/claude-sonnet-4-6", "opus").id, "claude-sonnet-4-6");
+	assert.equal(pickModel(registry, "claude-opus-4", "opus").id, "claude-opus-4-8");
+	assert.equal(pickModel(registry, "claude-opus-4-1", "opus").id, "claude-opus-4-1");
+	assert.equal(pickModel(registry, "no-such-model", "sonnet").id, "claude-sonnet-5-5");
+	assert.equal(pickModel(registry, undefined, "opus").id, "claude-opus-5-5");
+	assert.equal(pickModel(registry, undefined, "gpt"), null);
+});
+
+test("pickModel matches the display name case-insensitively", () => {
+	const named = [
+		{ provider: "a", id: "x-1", name: "Claude Opus 5.5" },
+		{ provider: "a", id: "y-2", name: "Claude Sonnet 5.5" },
+		{ provider: "a", id: "z-3" },
+	];
+
+	assert.equal(pickModel({ available: named, find: () => null }, "opus 5.5", "sonnet").id, "x-1");
+	assert.equal(pickModel({ available: named, find: () => null }, "und", "sonnet"), null);
+});
+
+test("pickModel returns nothing when no model has credentials", () => {
+	const find = () => ({ provider: "anthropic", id: "claude-opus-5-5" });
+
+	assert.equal(pickModel({ available: [], find }, "anthropic/claude-opus-5-5", "opus"), null);
 });
