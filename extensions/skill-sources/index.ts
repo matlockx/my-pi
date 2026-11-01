@@ -9,16 +9,26 @@
  * entering a corrected link, or skipping. Local edits are never overwritten
  * without asking.
  *
+ * `skill_remove` / `/skill-remove <name>` deletes any skill in my-pi/skills
+ * after a confirmation dialog. `skill_audit_data` returns the facts the
+ * `/skills-audit` prompt judges: usage from the omp and pi session logs, last
+ * change, link source state, and similar descriptions.
+ *
  * GITHUB_TOKEN or GH_TOKEN, when set, authenticates the GitHub calls (private
  * repositories, higher rate limit).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { describe, exclude, install, listInstalled, readSource, relink, update } from "./sources.mjs";
+import { auditData, gitLastChanged } from "./audit.mjs";
+import { describe, exclude, install, listInstalled, readSource, relink, remove, update } from "./sources.mjs";
 
-const SKILLS_DIR = fileURLToPath(new URL("../../skills", import.meta.url));
+const REPO = fileURLToPath(new URL("../..", import.meta.url));
+const SKILLS_DIR = join(REPO, "skills");
+const SESSION_DIRS = [join(homedir(), ".omp/agent/sessions"), join(homedir(), ".pi/agent/sessions")];
 
 const KEEP = "Keep the local copy and exclude it from updates";
 const RELINK = "Enter a corrected link";
@@ -106,6 +116,17 @@ async function installOne(url: string, name: string | undefined, signal?: AbortS
 	return `${r.name} (${r.dir}): ${describe(r)}`;
 }
 
+async function removeOne(ctx: ExtensionContext, name: string): Promise<string> {
+	if (!ctx.hasUI) throw new Error(`skill ${name} not deleted: no UI available for the confirmation`);
+	const r = await remove(SKILLS_DIR, name, ({ dir, url }) =>
+		ctx.ui.confirm(
+			`Delete skill ${name}?`,
+			`${dir}\n\n${url ? `Installed from ${url}; /skill-install can bring it back.` : "Not installed from a link; only git can restore it, and only if it was committed."}`,
+		),
+	);
+	return r.deleted ? `deleted ${r.dir}` : `skill ${name} kept: deletion declined`;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "skill_install",
@@ -137,6 +158,37 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "skill_remove",
+		label: "Remove skill",
+		description:
+			"Delete a skill from my-pi/skills by its directory name. The user confirms each deletion in a dialog; " +
+			"do not ask for confirmation separately.",
+		parameters: Type.Object({ name: Type.String({ description: "Skill directory name under my-pi/skills" }) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			return { content: [{ type: "text", text: await removeOne(ctx, params.name) }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "skill_audit_data",
+		label: "Skill audit data",
+		description:
+			"Read-only facts for a skills audit (used by /skills-audit): per skill in my-pi/skills its description, " +
+			"size, last commit date, link source state, and usage from the omp and pi session logs (sessions that read " +
+			"or invoked it, sessions in the last 90 days, last use), plus pairs of skills with similar descriptions.",
+		parameters: Type.Object({}),
+		async execute(_id, _params, signal) {
+			const data = await auditData({
+				skillsDir: SKILLS_DIR,
+				sessionDirs: SESSION_DIRS,
+				lastChanged: (dir: string) => gitLastChanged(REPO, join("skills", dir)),
+				...deps(signal),
+			});
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 1) }], details: {} };
+		},
+	});
+
 	pi.registerCommand("skill-install", {
 		description: "Install a skill from a GitHub link: /skill-install <link> [name]",
 		handler: async (args, ctx) => {
@@ -154,6 +206,19 @@ export default function (pi: ExtensionAPI) {
 		description: "Update every skill installed from a GitHub link",
 		handler: async (_args, ctx) => {
 			ctx.ui.notify(await updateAll(ctx), "info");
+		},
+	});
+
+	pi.registerCommand("skill-remove", {
+		description: "Delete a skill from my-pi/skills after confirmation: /skill-remove <name>",
+		handler: async (args, ctx) => {
+			const name = args.trim();
+			if (!name) return ctx.ui.notify("usage: /skill-remove <name>", "warning");
+			try {
+				ctx.ui.notify(await removeOne(ctx, name), "info");
+			} catch (err) {
+				ctx.ui.notify(`skill remove failed: ${(err as Error).message}`, "error");
+			}
 		},
 	});
 }

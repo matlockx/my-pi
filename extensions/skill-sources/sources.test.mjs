@@ -7,14 +7,17 @@ import { join } from "node:path";
 import {
 	SOURCE_FILE,
 	blobSha,
+	check,
 	describe,
 	exclude,
+	frontMatter,
 	install,
 	listInstalled,
 	parseGitHubUrl,
 	readSource,
 	refCandidates,
 	relink,
+	remove,
 	update,
 } from "./sources.mjs";
 
@@ -318,4 +321,75 @@ test("listInstalled ignores own skills and reports an unreadable record", (t) =>
 
 	assert.deepEqual(list.map((e) => e.name), ["broken"]);
 	assert.match(list[0].error, /unreadable/);
+});
+
+test("frontMatter reads quoted and folded values and returns null without front matter", () => {
+	assert.deepEqual(frontMatter(`---\nname: "go"\ndescription: 'Go rules.'\n---\nx`), { name: "go", description: "Go rules." });
+	assert.deepEqual(frontMatter("---\nname: x\ndescription: >\n  Line one\n  line two.\nother: y\n---\n"), {
+		name: "x",
+		description: "Line one line two.",
+	});
+	assert.deepEqual(frontMatter("---\nfoo: bar\n---\n"), { name: undefined, description: undefined });
+	assert.equal(frontMatter("# no front matter"), null);
+});
+
+test("check reports current, behind, gone and excluded without writing", async (t) => {
+	const { skillsDir, state, deps } = setup(t, { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s") } } } });
+	await install("https://github.com/o/r/tree/main/s", { skillsDir, ...deps });
+	fs.writeFileSync(join(skillsDir, "s/SKILL.md"), "edited");
+	const record = fs.readFileSync(join(skillsDir, "s", SOURCE_FILE), "utf8");
+
+	assert.deepEqual(await check(entry(skillsDir, "s"), deps), { status: "current", edits: ["SKILL.md"] });
+	state.repos["o/r"].refs.main["s/extra.md"] = "new";
+	assert.equal((await check(entry(skillsDir, "s"), deps)).status, "behind");
+	delete state.repos["o/r"];
+	assert.equal((await check(entry(skillsDir, "s"), deps)).status, "gone");
+	assert.equal(fs.readFileSync(join(skillsDir, "s/SKILL.md"), "utf8"), "edited");
+	assert.equal(fs.readFileSync(join(skillsDir, "s", SOURCE_FILE), "utf8"), record);
+	exclude(entry(skillsDir, "s"));
+	assert.equal((await check(entry(skillsDir, "s"), deps)).status, "excluded");
+});
+
+test("remove asks with the directory and link, and deletes only after confirmation", async (t) => {
+	const { skillsDir, deps } = setup(t, { "o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s") } } } });
+	await install("https://github.com/o/r/tree/main/s", { skillsDir, ...deps });
+	fs.mkdirSync(join(skillsDir, "own/ref"), { recursive: true });
+	fs.writeFileSync(join(skillsDir, "own/SKILL.md"), SKILL("own"));
+	fs.writeFileSync(join(skillsDir, "own/ref/a.md"), "a");
+	const asked = [];
+	const answer = (ok) => async (info) => (asked.push(info), ok);
+
+	const declined = await remove(skillsDir, "own", answer(false));
+	assert.deepEqual(declined, { dir: join(skillsDir, "own"), url: null, deleted: false });
+	assert.ok(fs.existsSync(join(skillsDir, "own/ref/a.md")));
+
+	assert.equal((await remove(skillsDir, "own", answer(true))).deleted, true);
+	assert.deepEqual(await remove(skillsDir, "s", answer(true)), {
+		dir: join(skillsDir, "s"),
+		url: "https://github.com/o/r/tree/main/s",
+		deleted: true,
+	});
+	assert.deepEqual(asked.map((a) => a.url), [null, null, "https://github.com/o/r/tree/main/s"]);
+	assert.deepEqual(fs.readdirSync(skillsDir), []);
+});
+
+test("remove refuses names outside the skills directory, non-skills, symlinks and missing skills without asking", async (t) => {
+	const { skillsDir } = setup(t, {});
+	const outside = fs.mkdtempSync(join(os.tmpdir(), "skill-outside-"));
+	t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+	fs.writeFileSync(join(outside, "SKILL.md"), SKILL("x"));
+	fs.symlinkSync(outside, join(skillsDir, "linked"));
+	fs.mkdirSync(join(skillsDir, "notes"));
+	fs.writeFileSync(join(skillsDir, "notes/readme.md"), "x");
+	let asked = 0;
+	const confirm = async () => (asked++, true);
+
+	for (const name of ["", "..", "../x", "a/b", ".hidden"])
+		await assert.rejects(remove(skillsDir, name, confirm), /invalid skill name/);
+	await assert.rejects(remove(skillsDir, "linked", confirm), /not a skill directory/);
+	await assert.rejects(remove(skillsDir, "notes", confirm), /has no SKILL.md/);
+	await assert.rejects(remove(skillsDir, "nope", confirm), /no skill nope/);
+	assert.equal(asked, 0);
+	assert.ok(fs.existsSync(join(outside, "SKILL.md")));
+	assert.ok(fs.existsSync(join(skillsDir, "notes/readme.md")));
 });

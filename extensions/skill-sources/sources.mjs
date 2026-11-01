@@ -160,12 +160,28 @@ function target(dir, rel) {
 	return join(dir, ...norm.split("/"));
 }
 
+/**
+ * Returns the name and description from the YAML front matter of a skill
+ * file, or null when it has none. Folded (`>`) and literal (`|`) descriptions
+ * are joined into one line.
+ */
+export function frontMatter(skillMd) {
+	const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd);
+	if (!fm) return null;
+	const quoted = /^(["'])(.*)\1$/;
+	const name = /^name:[ \t]*(.+)$/m.exec(fm[1])?.[1].trim().replace(quoted, "$2");
+	const desc = /^description:[ \t]*(.*)$((?:\r?\n[ \t]+.*)*)/m.exec(fm[1]);
+	let description = desc?.[1].trim().replace(quoted, "$2");
+	if (desc && (!description || /^[>|][+-]?$/.test(description)))
+		description = desc[2].split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(" ");
+	return { name: name || undefined, description: description || undefined };
+}
+
 /** Derives the skill directory name from the front matter name, else from fallback. */
 export function skillName(skillMd, fallback) {
-	const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd);
+	const fm = frontMatter(skillMd);
 	if (!fm) throw new Error("not a skill: SKILL.md has no front matter");
-	const named = /^name:\s*["']?([^"'\r\n]+?)["']?\s*$/m.exec(fm[1])?.[1];
-	const name = sanitiseName(named ?? fallback);
+	const name = sanitiseName(fm.name ?? fallback);
 	if (!name) throw new Error("cannot derive a skill name; pass one");
 	return name;
 }
@@ -312,6 +328,54 @@ export async function update(entry, deps, { overwrite = false } = {}) {
 	const up = await fetchUpstream(src, deps);
 	if (!up) return { status: "gone" };
 	return sync(entry.dir, src, up, deps, overwrite);
+}
+
+/**
+ * Compares one installed skill with its source without writing anything.
+ * Returns status "excluded", "gone", "current" or "behind" (upstream has
+ * changes not applied locally), with the locally edited paths in edits.
+ */
+export async function check(entry, deps) {
+	const src = entry.source;
+	const edits = localEdits(entry.dir, src.files);
+	if (src.updates === false) return { status: "excluded", edits };
+	const up = await fetchUpstream(src, deps);
+	if (!up) return { status: "gone", edits };
+	const recorded = src.files ?? {};
+	const behind =
+		Object.keys(recorded).some((rel) => !(rel in up.files)) ||
+		Object.keys(up.files).some((rel) => recorded[rel] !== up.files[rel].sha);
+	return { status: behind ? "behind" : "current", edits };
+}
+
+/**
+ * Deletes the skill directory skillsDir/<name> once confirm({ dir, url })
+ * resolves true. name must be a direct child holding a SKILL.md or a source
+ * record; anything else is refused before confirm is called. url is the link
+ * the skill was installed from, or null. Returns { dir, url, deleted }.
+ */
+export async function remove(skillsDir, name, confirm) {
+	if (!name || name !== posix.basename(name) || name.startsWith(".") || name.includes("\\"))
+		throw new Error(`invalid skill name: ${name}`);
+	const dir = join(skillsDir, name);
+	let stat;
+	try {
+		stat = fs.lstatSync(dir);
+	} catch {
+		throw new Error(`no skill ${name} in ${skillsDir}`);
+	}
+	if (!stat.isDirectory()) throw new Error(`${dir} is not a skill directory`);
+	if (!fs.existsSync(join(dir, "SKILL.md")) && !fs.existsSync(join(dir, SOURCE_FILE)))
+		throw new Error(`${dir} has no SKILL.md; not deleted`);
+	let url = null;
+	try {
+		url = readSource(dir)?.url ?? null;
+	} catch {
+		// An unreadable record does not block the deletion.
+	}
+	if (!(await confirm({ dir, url }))) return { dir, url, deleted: false };
+	fs.rmSync(dir, { recursive: true, force: true });
+	return { dir, url, deleted: true };
 }
 
 /** Excludes an installed skill from updates; the local files stay as they are. */
