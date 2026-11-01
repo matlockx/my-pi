@@ -5,6 +5,7 @@ import os from "node:os";
 import { join } from "node:path";
 
 import {
+	DEPS_FILE,
 	SOURCE_FILE,
 	blobSha,
 	check,
@@ -14,6 +15,7 @@ import {
 	install,
 	listInstalled,
 	parseGitHubUrl,
+	preview,
 	readSource,
 	refCandidates,
 	relink,
@@ -54,7 +56,8 @@ function fakeGitHub(state) {
 					dirs.add(rel.split("/")[0]);
 					continue;
 				}
-				tree.push({ path: rel, type: "blob", mode: c.mode ?? "100644", sha: blobSha(Buffer.from(text(c))) });
+				const buf = Buffer.from(text(c));
+				tree.push({ path: rel, type: "blob", mode: c.mode ?? "100644", sha: blobSha(buf), size: buf.length });
 			}
 			for (const d of dirs) tree.push({ path: d, type: "tree", mode: "040000", sha: "t" });
 			return Response.json({ sha: "root", tree, truncated: false });
@@ -392,4 +395,41 @@ test("remove refuses names outside the skills directory, non-skills, symlinks an
 	assert.equal(asked, 0);
 	assert.ok(fs.existsSync(join(outside, "SKILL.md")));
 	assert.ok(fs.existsSync(join(skillsDir, "notes/readme.md")));
+});
+
+test("preview reads the text files behind a link without writing, skipping binaries and oversized files", async (t) => {
+	const { skillsDir, deps } = setup(t, {
+		"o/r": {
+			HEAD: "main",
+			refs: { main: { "s/SKILL.md": SKILL("Tools"), "s/ref/a.md": "see https://x", "s/img.bin": "a\0b", "s/big.md": "x".repeat(50) } },
+		},
+	});
+
+	const p = await preview("https://github.com/o/r/tree/main/s", { maxFileBytes: 40, ...deps });
+
+	assert.equal(p.name, "tools");
+	assert.equal(p.src.path, "s");
+	assert.deepEqual(p.files, ["SKILL.md", "big.md", "img.bin", "ref/a.md"]);
+	assert.deepEqual(Object.keys(p.texts).sort(), ["SKILL.md", "ref/a.md"]);
+	assert.deepEqual(fs.readdirSync(skillsDir), []);
+});
+
+test("an upstream .skill-deps.sh is never installed, and update keeps and never removes the local one", async (t) => {
+	const { skillsDir, state, deps } = setup(t, {
+		"o/r": { HEAD: "main", refs: { main: { "s/SKILL.md": SKILL("s"), [`s/${DEPS_FILE}`]: "rm -rf ~" } } },
+	});
+	const r = await install("https://github.com/o/r/tree/main/s", { skillsDir, ...deps });
+	assert.deepEqual(r.skipped, [DEPS_FILE]);
+	assert.equal(fs.existsSync(join(skillsDir, "s", DEPS_FILE)), false);
+
+	fs.writeFileSync(join(skillsDir, "s", DEPS_FILE), "mine");
+	const main = state.repos["o/r"].refs.main;
+	main["s/SKILL.md"] = SKILL("s", "v2");
+	main[`s/${DEPS_FILE}`] = "changed upstream";
+	assert.equal((await update(entry(skillsDir, "s"), deps)).status, "updated");
+	delete main[`s/${DEPS_FILE}`];
+	await update(entry(skillsDir, "s"), deps);
+
+	assert.equal(fs.readFileSync(join(skillsDir, "s", DEPS_FILE), "utf8"), "mine");
+	assert.equal(Object.hasOwn(readSource(join(skillsDir, "s")).files, DEPS_FILE), false);
 });

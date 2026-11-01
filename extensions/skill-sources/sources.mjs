@@ -14,6 +14,9 @@ import fs from "node:fs";
 import { dirname, join, posix } from "node:path";
 
 export const SOURCE_FILE = ".source.json";
+/** Dependency install script written next to a skill; local only, never taken from or replaced by upstream. */
+export const DEPS_FILE = ".skill-deps.sh";
+const LOCAL_FILES = { [SOURCE_FILE]: true, [DEPS_FILE]: true };
 const API = "https://api.github.com";
 const RAW = "https://raw.githubusercontent.com";
 
@@ -103,9 +106,10 @@ function tree(deps, src, path, recursive) {
 
 /**
  * Returns the upstream files of a source as { files, skipped }, where files
- * maps the installed relative path to { sha, mode, from } (from = path in the
- * repository). Returns null when the source no longer exists. Symlinks and
- * submodules are listed in skipped and never installed.
+ * maps the installed relative path to { sha, mode, size, from } (from = path in
+ * the repository). Returns null when the source no longer exists. Symlinks,
+ * submodules and upstream copies of the local-only files are listed in skipped
+ * and never installed.
  */
 export async function fetchUpstream(src, deps) {
 	if (src.kind === "file") {
@@ -113,7 +117,7 @@ export async function fetchUpstream(src, deps) {
 		const listing = await tree(deps, src, parent === "." ? "" : parent, false);
 		const entry = listing?.tree?.find((e) => e.path === posix.basename(src.path) && e.type === "blob");
 		if (!entry) return null;
-		return { files: { "SKILL.md": { sha: entry.sha, mode: entry.mode, from: src.path } }, skipped: [] };
+		return { files: { "SKILL.md": { sha: entry.sha, mode: entry.mode, size: entry.size, from: src.path } }, skipped: [] };
 	}
 	const listing = await tree(deps, src, src.path, true);
 	if (!listing) return null;
@@ -122,11 +126,11 @@ export async function fetchUpstream(src, deps) {
 	const skipped = [];
 	for (const e of listing.tree ?? []) {
 		if (e.type === "tree") continue;
-		if (e.type !== "blob" || e.mode === "120000" || e.path === SOURCE_FILE) {
+		if (e.type !== "blob" || e.mode === "120000" || Object.hasOwn(LOCAL_FILES, e.path)) {
 			skipped.push(e.path);
 			continue;
 		}
-		files[e.path] = { sha: e.sha, mode: e.mode, from: src.path ? `${src.path}/${e.path}` : e.path };
+		files[e.path] = { sha: e.sha, mode: e.mode, size: e.size, from: src.path ? `${src.path}/${e.path}` : e.path };
 	}
 	if (!files["SKILL.md"]) throw new Error(`no SKILL.md at the top of ${src.path || `${src.owner}/${src.repo}`}`);
 	return { files, skipped };
@@ -153,10 +157,32 @@ async function resolve(url, deps) {
 	throw new Error(`nothing found at ${url} (missing, renamed, or private without GITHUB_TOKEN)`);
 }
 
-/** Maps a relative upstream path into dir; null for paths that would leave it or clobber SOURCE_FILE. */
+/**
+ * Downloads the text files behind a GitHub link without installing anything.
+ * Returns { src, name, files, texts }: files lists every upstream path, texts
+ * maps the fetched text files to their content. SKILL.md is always fetched;
+ * binary files, other files above maxFileBytes and files beyond maxTotalBytes
+ * are listed but not fetched.
+ */
+export async function preview(url, { maxFileBytes = 200_000, maxTotalBytes = 2_000_000, ...deps } = {}) {
+	const { src, up } = await resolve(url, deps);
+	const texts = {};
+	let total = 0;
+	for (const rel of Object.keys(up.files).sort((a, b) => (a === "SKILL.md" ? -1 : b === "SKILL.md" ? 1 : a.localeCompare(b)))) {
+		const size = up.files[rel].size ?? 0;
+		if (rel !== "SKILL.md" && (size > maxFileBytes || total + size > maxTotalBytes)) continue;
+		const buf = await download(deps, src, up.files[rel]);
+		total += buf.length;
+		if (!buf.includes(0)) texts[rel] = buf.toString("utf8");
+	}
+	const name = skillName(texts["SKILL.md"] ?? "", fallbackName(src));
+	return { src, name, files: Object.keys(up.files).sort(), texts };
+}
+
+/** Maps a relative upstream path into dir; null for paths that would leave it or clobber a local-only file. */
 function target(dir, rel) {
 	const norm = posix.normalize(rel);
-	if (norm === ".." || norm.startsWith("../") || posix.isAbsolute(norm) || norm === SOURCE_FILE) return null;
+	if (norm === ".." || norm.startsWith("../") || posix.isAbsolute(norm) || Object.hasOwn(LOCAL_FILES, norm)) return null;
 	return join(dir, ...norm.split("/"));
 }
 
@@ -349,12 +375,11 @@ export async function check(entry, deps) {
 }
 
 /**
- * Deletes the skill directory skillsDir/<name> once confirm({ dir, url })
- * resolves true. name must be a direct child holding a SKILL.md or a source
- * record; anything else is refused before confirm is called. url is the link
- * the skill was installed from, or null. Returns { dir, url, deleted }.
+ * Returns skillsDir/<name> when name is a direct child directory holding a
+ * SKILL.md or a source record; throws for anything else (path segments,
+ * dot names, symlinks, files, missing or non-skill directories).
  */
-export async function remove(skillsDir, name, confirm) {
+export function skillDir(skillsDir, name) {
 	if (!name || name !== posix.basename(name) || name.startsWith(".") || name.includes("\\"))
 		throw new Error(`invalid skill name: ${name}`);
 	const dir = join(skillsDir, name);
@@ -366,7 +391,18 @@ export async function remove(skillsDir, name, confirm) {
 	}
 	if (!stat.isDirectory()) throw new Error(`${dir} is not a skill directory`);
 	if (!fs.existsSync(join(dir, "SKILL.md")) && !fs.existsSync(join(dir, SOURCE_FILE)))
-		throw new Error(`${dir} has no SKILL.md; not deleted`);
+		throw new Error(`${dir} has no SKILL.md`);
+	return dir;
+}
+
+/**
+ * Deletes the skill directory skillsDir/<name> once confirm({ dir, url })
+ * resolves true. name must pass skillDir; anything else is refused before
+ * confirm is called. url is the link the skill was installed from, or null.
+ * Returns { dir, url, deleted }.
+ */
+export async function remove(skillsDir, name, confirm) {
+	const dir = skillDir(skillsDir, name);
 	let url = null;
 	try {
 		url = readSource(dir)?.url ?? null;

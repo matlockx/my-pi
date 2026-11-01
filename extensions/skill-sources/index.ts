@@ -1,10 +1,15 @@
 /**
  * Skills from GitHub links.
  *
- * `skill_install` / `/skill-install <link> [name]` installs a skill from a link
- * to a SKILL.md file or a skill directory on GitHub into my-pi/skills.
- * `skill_update` / `/skills-update` checks every skill installed that way for a
- * newer upstream version and applies it. When a source no longer exists, the
+ * The `/skill-install <link | name>` prompt analyses a skill before installing
+ * or re-installing it: `skill_analyze` reports the tools and skills it depends
+ * on, the user decides whether to continue, `skill_install` / `skill_reinstall`
+ * fetch it, and `skill_deps_run` writes and runs the dependency install script
+ * (DEPS_FILE next to SKILL.md) after the user agrees in a dialog. `skill_install`
+ * refuses links not analysed in the same session.
+ *
+ * `skill_update` / `/skills-update` checks every skill installed from a link for
+ * a newer upstream version and applies it. When a source no longer exists, the
  * user chooses between keeping the local copy (excluded from future updates),
  * entering a corrected link, or skipping. Local edits are never overwritten
  * without asking.
@@ -19,12 +24,26 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import { analyze } from "./analyze.mjs";
 import { auditData, gitLastChanged } from "./audit.mjs";
-import { describe, exclude, install, listInstalled, readSource, relink, remove, update } from "./sources.mjs";
+import { runDepsScript, sandboxBlocked, writeDepsScript } from "./deps.mjs";
+import {
+	DEPS_FILE,
+	describe,
+	exclude,
+	install,
+	listInstalled,
+	readSource,
+	relink,
+	remove,
+	skillDir,
+	update,
+} from "./sources.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const SKILLS_DIR = join(REPO, "skills");
@@ -111,9 +130,40 @@ async function updateAll(ctx: ExtensionContext, signal?: AbortSignal): Promise<s
 	return lines.join("\n");
 }
 
-async function installOne(url: string, name: string | undefined, signal?: AbortSignal): Promise<string> {
+async function installOne(
+	ctx: ExtensionContext,
+	url: string,
+	name: string | undefined,
+	signal?: AbortSignal,
+): Promise<string> {
 	const r = await install(url, { skillsDir: SKILLS_DIR, name, ...deps(signal) });
-	return `${r.name} (${r.dir}): ${describe(r)}`;
+	const done =
+		r.status === "local-edits"
+			? await resolveEdits(ctx, { name: r.name, dir: r.dir, source: readSource(r.dir) }, r, signal)
+			: describe(r);
+	return `${r.name} (${r.dir}): ${done}`;
+}
+
+async function runDeps(ctx: ExtensionContext, name: string, script: string | undefined, signal?: AbortSignal) {
+	const dir = skillDir(SKILLS_DIR, name);
+	const file = script ? writeDepsScript(dir, script) : join(dir, DEPS_FILE);
+	if (!fs.existsSync(file)) throw new Error(`${file} does not exist; pass the script`);
+	const host = `Run it in a host shell: bash '${file}'`;
+	if (!ctx.hasUI) return `${file} not run: no UI available to ask for permission. ${host}`;
+	const ok = await ctx.ui.confirm(
+		`Run the dependency install script for ${name} now?`,
+		`${file}\n\nNo: nothing runs; you get the command to run it yourself.\n\n${fs.readFileSync(file, "utf8")}`,
+	);
+	if (!ok) return `${file} not run: the user declined. ${host}`;
+	const r = await runDepsScript(file, { signal });
+	const status = r.timedOut ? "timed out" : r.code === 0 ? "succeeded" : `failed (exit ${r.code ?? r.signal})`;
+	const hint =
+		r.code === 0
+			? ""
+			: sandboxBlocked(r.output)
+				? `\nThe run was blocked by the sandbox or file permissions. ${host}`
+				: `\nIf this failed because of the sandbox, run it in a host shell: bash '${file}'`;
+	return `${file} ${status}.${hint}\n--- output (last part) ---\n${r.output}`;
 }
 
 async function removeOne(ctx: ExtensionContext, name: string): Promise<string> {
@@ -128,6 +178,26 @@ async function removeOne(ctx: ExtensionContext, name: string): Promise<string> {
 }
 
 export default function (pi: ExtensionAPI) {
+	// DEV-NOTE: install requires an analysis in the same session so the user sees the
+	// skill's tool and skill dependencies before anything is written.
+	const analysed = new Set<string>();
+
+	pi.registerTool({
+		name: "skill_analyze",
+		label: "Analyse skill",
+		description:
+			"Analyse a skill before installing or re-installing it, without changing anything. target is a GitHub link, or " +
+			"the name of a skill in my-pi/skills (read from its recorded link when it has one). Returns its files and text, " +
+			"the links it contains (companion tool repositories), the commands it names with their PATH location (null = " +
+			"missing), the skills it refers to and whether they are installed, and the existing dependency install script.",
+		parameters: Type.Object({ target: Type.String({ description: "GitHub link or installed skill name" }) }),
+		async execute(_id, params, signal) {
+			const a = await analyze(params.target, { skillsDir: SKILLS_DIR, pathEnv: process.env.PATH, ...deps(signal) });
+			for (const key of [a.target, a.name, a.url]) if (key) analysed.add(key);
+			return { content: [{ type: "text", text: JSON.stringify(a, null, 1) }], details: {} };
+		},
+	});
+
 	pi.registerTool({
 		name: "skill_install",
 		label: "Install skill",
@@ -135,14 +205,49 @@ export default function (pi: ExtensionAPI) {
 			"Install a skill from a GitHub link into my-pi/skills: a link to a SKILL.md (or other skill markdown) file " +
 			"(github.com/<o>/<r>/blob/<ref>/<path>, raw.githubusercontent.com/...) or to a skill directory " +
 			"(github.com/<o>/<r>/tree/<ref>/<dir>, or the repository root). The source is recorded so skill_update can " +
-			"update it. Installing the same link again updates it and re-enables updates.",
+			"update it. Requires skill_analyze on the same link first and the user's agreement to continue.",
 		parameters: Type.Object({
 			url: Type.String({ description: "GitHub link to the skill file or directory" }),
 			name: Type.Optional(Type.String({ description: "Skill directory name; defaults to the front matter name" })),
 		}),
-		async execute(_id, params, signal) {
-			const text = await installOne(params.url, params.name, signal);
-			return { content: [{ type: "text", text }], details: {} };
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			if (!analysed.has(params.url.trim()))
+				throw new Error(`not installed: run skill_analyze on ${params.url} first and report its dependencies to the user`);
+			return { content: [{ type: "text", text: await installOne(ctx, params.url, params.name, signal) }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "skill_reinstall",
+		label: "Re-install skill",
+		description:
+			"Fetch an installed skill again from its recorded GitHub link and re-enable its updates. Asks the user before " +
+			"overwriting local edits. Requires skill_analyze on the skill first. Skills not installed from a link have " +
+			"nothing to fetch; handle their dependencies with skill_deps_run.",
+		parameters: Type.Object({ name: Type.String({ description: "Skill directory name under my-pi/skills" }) }),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const source = readSource(skillDir(SKILLS_DIR, params.name));
+			if (!source) throw new Error(`${params.name} was not installed from a link; nothing to fetch`);
+			if (!analysed.has(params.name) && !analysed.has(source.url))
+				throw new Error(`not re-installed: run skill_analyze on ${params.name} first and report its dependencies to the user`);
+			return { content: [{ type: "text", text: await installOne(ctx, source.url, params.name, signal) }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "skill_deps_run",
+		label: "Install skill dependencies",
+		description:
+			`Write the dependency install script of a skill (my-pi/skills/<name>/${DEPS_FILE}, kept next to the skill and ` +
+			"never touched by updates) and run it after the user agrees in a dialog that shows the whole script. Without " +
+			"script, the existing file is run. Returns the output, or the command for the user to run in a host shell when " +
+			"the user declines or the sandbox blocks the run. Do not ask for permission separately.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Skill directory name under my-pi/skills" }),
+			script: Type.Optional(Type.String({ description: "Full bash script; replaces the existing file" })),
+		}),
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return { content: [{ type: "text", text: await runDeps(ctx, params.name, params.script, signal) }], details: {} };
 		},
 	});
 
@@ -186,19 +291,6 @@ export default function (pi: ExtensionAPI) {
 				...deps(signal),
 			});
 			return { content: [{ type: "text", text: JSON.stringify(data, null, 1) }], details: {} };
-		},
-	});
-
-	pi.registerCommand("skill-install", {
-		description: "Install a skill from a GitHub link: /skill-install <link> [name]",
-		handler: async (args, ctx) => {
-			const [url, name] = args.trim().split(/\s+/);
-			if (!url) return ctx.ui.notify("usage: /skill-install <github link> [name]", "warning");
-			try {
-				ctx.ui.notify(await installOne(url, name), "info");
-			} catch (err) {
-				ctx.ui.notify(`skill install failed: ${(err as Error).message}`, "error");
-			}
 		},
 	});
 
