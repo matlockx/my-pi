@@ -174,22 +174,45 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 				`jq 'del(.mcpServers.github)' ${q(file)} > ${q(`${file}.tmp`)} && chmod 600 ${q(`${file}.tmp`)} && mv ${q(`${file}.tmp`)} ${q(file)}`,
 		);
 	}
-	if (!proxyUp)
-		actions.push(
-			`GitHub MCP proxy not listening on 127.0.0.1:${GITHUB_MCP_PORT}: run ghmcp in a host terminal, then /mcp reconnect github`,
-		);
-	if (!goProxyUp)
-		actions.push(
-			`Go module proxy not listening on 127.0.0.1:${GO_MODULE_PROXY_PORT} (go get/build in the sandbox fails): run gomodproxy in a host terminal`,
-		);
+	actions.push(...proxyActions(proxyUp, goProxyUp));
 	return { fixed, actions };
 }
 
-/** Renders a check result for display; null when there is nothing to report. */
-export function formatReport({ fixed, actions }) {
+/** Action lines for host proxies that are not listening. */
+function proxyActions(githubUp, goUp) {
+	const out = [];
+	if (!githubUp)
+		out.push(
+			`GitHub MCP proxy not listening on 127.0.0.1:${GITHUB_MCP_PORT}: run my-pi-start in a host terminal, then /mcp reconnect github`,
+		);
+	if (!goUp)
+		out.push(
+			`Go module proxy not listening on 127.0.0.1:${GO_MODULE_PROXY_PORT} (go get/build in the sandbox fails): run my-pi-start in a host terminal`,
+		);
+	return out;
+}
+
+/**
+ * Renders a check result for display; null when there is nothing to report.
+ * With setupScript, a todo list ends in the command that closes every todo at once.
+ */
+export function formatReport({ fixed, actions }, setupScript) {
 	if (!fixed.length && !actions.length) return null;
 	const lines = ["my-pi setup:"];
 	for (const f of fixed) lines.push(`  fixed: ${f}`);
 	for (const a of actions) lines.push(`  todo:  ${a}`);
+	if (actions.length && setupScript)
+		lines.push(`  all at once, from a host terminal: fish ${q(setupScript)} && my-pi-start`);
 	return lines.join("\n");
+}
+
+/**
+ * Notification for a check result: the report at level "warning" while todos
+ * remain, "info" otherwise. A clean result yields "my-pi setup: complete", or
+ * null when quietWhenClean is set.
+ */
+export function notification(result, setupScript, quietWhenClean) {
+	const text = formatReport(result, setupScript);
+	if (text === null) return quietWhenClean ? null : { text: "my-pi setup: complete", level: "info" };
+	return { text, level: result.actions.length ? "warning" : "info" };
 }

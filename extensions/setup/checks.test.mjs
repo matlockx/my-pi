@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { formatReport, parseNodeVersion, q, runChecks } from "./checks.mjs";
+import { formatReport, notification, parseNodeVersion, q, runChecks } from "./checks.mjs";
 
 /** Builds a fake repo and home; the home has the directories a set-up Mac has. */
 function fixture(t) {
@@ -132,8 +132,8 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 	assert.equal(actions[0], "github-mcp-server not on PATH: brew install github-mcp-server");
 	assert.match(actions[1], /^node v24\.1\.9 is older than 24\.2 /);
 	assert.match(actions[2], /defines "github", which outranks my-pi\/mcp\.json: jq 'del\(\.mcpServers\.github\)' .* && chmod 600 .* && mv /);
-	assert.match(actions[3], /^GitHub MCP proxy not listening on 127\.0\.0\.1:8082: run ghmcp in a host terminal/);
-	assert.match(actions[4], /^Go module proxy not listening on 127\.0\.0\.1:8083 .*: run gomodproxy in a host terminal$/);
+	assert.match(actions[3], /^GitHub MCP proxy not listening on 127\.0\.0\.1:8082: run my-pi-start in a host terminal, then \/mcp reconnect github$/);
+	assert.match(actions[4], /^Go module proxy not listening on 127\.0\.0\.1:8083 .*: run my-pi-start in a host terminal$/);
 
 	const onlyGoDown = await runChecks({ repo, home, ...healthy, portOpen: async (port) => port !== 8083 });
 	assert.equal(onlyGoDown.actions.length, 2, "github entry in user mcp.json plus the Go proxy");
@@ -179,4 +179,26 @@ test("formatReport lists fixes before todos", () => {
 		formatReport({ fixed: ["linked a -> b"], actions: ["c missing: ln -s d c"] }),
 		"my-pi setup:\n  fixed: linked a -> b\n  todo:  c missing: ln -s d c",
 	);
+});
+
+test("formatReport ends a todo list with the setup script, but not a fixes-only report", () => {
+	const setup = "/Users/me/my pi/setup.fish";
+	assert.equal(
+		formatReport({ fixed: [], actions: ["c missing: ln -s d c"] }, setup),
+		"my-pi setup:\n  todo:  c missing: ln -s d c\n  all at once, from a host terminal: fish '/Users/me/my pi/setup.fish' && my-pi-start",
+	);
+	assert.equal(formatReport({ fixed: ["linked a -> b"], actions: [] }, setup), "my-pi setup:\n  fixed: linked a -> b");
+});
+
+test("notification: warning while todos remain, info for fixes only, complete or silent when clean", () => {
+	const clean = { fixed: [], actions: [] };
+	assert.equal(notification(clean, "s.fish", true), null);
+	assert.deepEqual(notification(clean, "s.fish", false), { text: "my-pi setup: complete", level: "info" });
+	assert.deepEqual(notification({ fixed: ["linked a -> b"], actions: [] }, "s.fish", true), {
+		text: "my-pi setup:\n  fixed: linked a -> b",
+		level: "info",
+	});
+	const todo = notification({ fixed: ["linked a -> b"], actions: ["c missing"] }, "s.fish", true);
+	assert.equal(todo.level, "warning");
+	assert.match(todo.text, /todo: {2}c missing\n {2}all at once, from a host terminal: fish s\.fish && my-pi-start$/);
 });
