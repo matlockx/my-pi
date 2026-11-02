@@ -1,8 +1,9 @@
 # Go module proxy for omp sessions in `nono --profile pi`. Started from a host shell, never by
 # the agent: the sandbox side is GOPROXY/GONOPROXY in the nono profile's environment.set_vars.
 #
-# Loaded through my-pi/fish/conf.d/my-pi.fish; the my-pi setup extension reports when it is down.
-# Requires: go with GOPRIVATE set; node >= 24.2.
+# Loaded through my-pi/fish/conf.d/my-pi.fish; the my-pi setup extension reports when it is down
+# while the session's GOPROXY points at it.
+# Requires: node >= 24.2; go with GOPRIVATE set, otherwise `start` skips the proxy (nothing to serve).
 function gomodproxy --description 'Go module proxy on 127.0.0.1:8083 (GOPRIVATE fetched on the host)'
     set -l port 8083
     set -l logfile ~/.local/state/gomodproxy.log
@@ -13,6 +14,12 @@ function gomodproxy --description 'Go module proxy on 127.0.0.1:8083 (GOPRIVATE 
         case '' start
             if test -n "$listening"
                 echo "gomodproxy: port $port already in use (pid $listening)"
+                return 0
+            end
+            set -l goprivate
+            command -q go; and set goprivate (go env GOPRIVATE)
+            if test -z "$goprivate"
+                echo "gomodproxy: GOPRIVATE is empty (or go missing); nothing to serve, not started"
                 return 0
             end
             mkdir -p (path dirname $logfile)

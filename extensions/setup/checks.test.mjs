@@ -21,9 +21,12 @@ function fixture(t) {
 	return { repo, home };
 }
 
+/** `go env GOPROXY` of a session routed through the host Go module proxy. */
+const SANDBOX_GOPROXY = "http://127.0.0.1:8083,off";
+
 /** Command and port probes of a fully set-up machine. */
 const healthy = {
-	run: async (cmd) => (cmd === "node" ? "v26.7.0" : "GitHub MCP Server 2.0.3"),
+	run: async (cmd) => ({ node: "v26.7.0", go: SANDBOX_GOPROXY })[cmd] ?? "GitHub MCP Server 2.0.3",
 	portOpen: async () => true,
 };
 
@@ -124,7 +127,7 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 	const { actions } = await runChecks({
 		repo,
 		home,
-		run: async (cmd) => (cmd === "node" ? "v24.1.9" : null),
+		run: async (cmd) => ({ node: "v24.1.9", go: SANDBOX_GOPROXY })[cmd] ?? null,
 		portOpen: async () => false,
 	});
 
@@ -141,6 +144,20 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 
 	const missingNode = await runChecks({ repo, home, run: async () => null, portOpen: async () => true });
 	assert.match(missingNode.actions[1], /^node not on PATH is older than 24\.2/);
+});
+
+test("reports a stopped Go module proxy only when GOPROXY points at it", async (t) => {
+	const { repo, home } = fixture(t);
+	const goDown = async (port) => port !== 8083;
+	const goProxyActions = async (goProxy) =>
+		(await runChecks({ repo, home, run: async (cmd) => (cmd === "go" ? goProxy : healthy.run(cmd)), portOpen: goDown }))
+			.actions;
+
+	assert.equal((await goProxyActions("http://localhost:8083")).length, 1);
+	assert.equal((await goProxyActions("https://proxy.golang.org|http://127.0.0.1:8083/")).length, 1);
+	assert.deepEqual(await goProxyActions("https://proxy.golang.org,direct"), [], "default GOPROXY");
+	assert.deepEqual(await goProxyActions("http://127.0.0.1:80830"), [], "other port");
+	assert.deepEqual(await goProxyActions(null), [], "go not on PATH");
 });
 
 test("ignores a user mcp.json that is not JSON or has no github entry", async (t) => {

@@ -154,9 +154,10 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	}
 	actions.push(...checkFishCopies(repo, home));
 
-	const [mcpVersion, nodeVersion, proxyUp, goProxyUp] = await Promise.all([
+	const [mcpVersion, nodeVersion, goProxy, proxyUp, goProxyUp] = await Promise.all([
 		run("github-mcp-server", ["--version"]),
 		run("node", ["--version"]),
+		run("go", ["env", "GOPROXY"]),
 		portOpen(GITHUB_MCP_PORT),
 		portOpen(GO_MODULE_PROXY_PORT),
 	]);
@@ -174,18 +175,25 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 				`jq 'del(.mcpServers.github)' ${q(file)} > ${q(`${file}.tmp`)} && chmod 600 ${q(`${file}.tmp`)} && mv ${q(`${file}.tmp`)} ${q(file)}`,
 		);
 	}
-	actions.push(...proxyActions(proxyUp, goProxyUp));
+	// DEV-NOTE: the Go proxy matters only where the session's GOPROXY points at it (set by the nono
+	// profile on Macs with GOPRIVATE modules); elsewhere go reaches proxy.golang.org directly.
+	actions.push(...proxyActions(proxyUp, goProxyUp || !usesGoModuleProxy(goProxy)));
 	return { fixed, actions };
 }
 
-/** Action lines for host proxies that are not listening. */
-function proxyActions(githubUp, goUp) {
+/** Reports whether a GOPROXY list (`go env GOPROXY` output, null when go cannot run) names the host Go module proxy. */
+export function usesGoModuleProxy(goProxy) {
+	return new RegExp(`(^|[,|/])(127\\.0\\.0\\.1|localhost):${GO_MODULE_PROXY_PORT}($|[,|/])`).test(goProxy ?? "");
+}
+
+/** Action lines for host proxies that are not listening; goOk is true when the Go proxy is up or unused. */
+function proxyActions(githubUp, goOk) {
 	const out = [];
 	if (!githubUp)
 		out.push(
 			`GitHub MCP proxy not listening on 127.0.0.1:${GITHUB_MCP_PORT}: run my-pi-start in a host terminal, then /mcp reconnect github`,
 		);
-	if (!goUp)
+	if (!goOk)
 		out.push(
 			`Go module proxy not listening on 127.0.0.1:${GO_MODULE_PROXY_PORT} (go get/build in the sandbox fails): run my-pi-start in a host terminal`,
 		);
