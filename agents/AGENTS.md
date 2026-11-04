@@ -23,6 +23,7 @@ When unsure, **ask the developer** before making changes.
 | G-15 | New/changed code passes the repo's coverage gate before reporting done: with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI) **≥ 80 %** line+branch coverage, measured locally; otherwise every added or changed function at **CRAP ≤ 10** (`crapper --changed --threshold 10`). `crapper` not installed → report the gate as not run and point to `/skill-install ub-mode` | Ship over the gate, pad with assertion-free tests, extend `sonar.*exclusions` to pass, run Sonar scans nobody asked for, or report done without saying the gate was not run |
 | G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 | G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
+| G-18 | New/changed code leaves no `dryer --threshold 0.8` duplicate candidate touching the change: extract the shared logic or reuse what exists | Copy a function and tweak it; gate with `dryer --changed`, which never compares against untouched files |
 
 ## Asking the User (HARD RULE)
 
@@ -334,6 +335,29 @@ branches; complexity above 10 fails even when fully covered and has to be split.
   they are not ignored yet, and never commit them.
 - `crapper` not on PATH → say so and point to `/skill-install ub-mode`, which installs it.
 - Languages crapper does not score (shell, SQL, YAML, Terraform) are exempt; say so.
+
+### Duplication (dryer), every repo
+
+New or changed code does not duplicate existing code: no `dryer` candidate at **similarity ≥ 0.8**
+may have a side in code the task added or changed. This applies on top of the coverage gate, with
+or without SonarQube. dryer comes with the ub-mode skill's tools, like crapper.
+
+- Before reporting work done, run `dryer --threshold 0.8` from the repo root. Never gate with
+  `--changed`: it compares the changed files only with each other, so code copied from an
+  untouched file passes unseen.
+- dryer exits 0 whether or not it finds candidates, so read the report. A candidate counts when
+  one of its two line ranges overlaps the task's changes. Report each such pair, and list older
+  pairs outside the change without fixing them unasked.
+- Hit → extract the shared logic into one function and call it from both places, or reuse the
+  existing one. Two forms that match in shape but not in meaning (mappers for unrelated records)
+  stay apart; name the pair and the reason in the report.
+- dryer skips test directories and test files (`*_test.go`, `*.spec.ts`, `test_*.py`, …), so
+  tests are not gated.
+- Languages: Clojure, Java, Go, TypeScript, Rust, Python. Plain JavaScript (`.js`, `.mjs`),
+  shell, SQL, YAML and Terraform are exempt; say so.
+- dryer writes `.metrics/dry.edn` into the repo; add `.metrics/` to `.gitignore` when it is not
+  ignored yet (Sonar repos included), and never commit it.
+- `dryer` not on PATH → say so and point to `/skill-install ub-mode`, which installs it.
 
 ### Rule traceability (repos with `docs/bdr/` or `docs/adr/`)
 
