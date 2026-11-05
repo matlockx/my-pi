@@ -129,7 +129,9 @@ update to the contract, lifecycle, E2E-scenario, or README documentation in the 
 CLI flag or subcommand absent from the command's long help and the README. An Avro or schema
 version left unbumped. Generated output under `gen/` not regenerated and committed alongside the
 IDL. A new decision record missing from the `docs/bdr` index, a new business rule with no record,
-rule text edited in place instead of superseded, a draft record implemented without being
+a BDR changed without its `**Version:**` bumped, a BDR superseded by a new record instead of
+edited in place, ADR rule text edited in place instead of superseded, a test or `DEV-NOTE:` still
+quoting a changed or removed BDR rule, a draft record implemented without being
 promoted, or a `DEV-NOTE:` pointing at a record that does not exist in this checkout. A commit
 message or PR title describing a different change from the one in the diff. A metric renamed,
 re-labelled, retyped, or removed while an alert, dashboard, or runbook still reads the old name or

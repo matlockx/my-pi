@@ -285,9 +285,10 @@ Findings:
   **MAJOR**, list the code site and propose the record.
 - A decision recorded but no longer matching reality — the code moved on, the record did
   not. **MAJOR**, and it invalidates the constraint that record would have produced.
-- Records edited in place where the repo convention is supersede-only, or superseded
-  where the convention is rewrite-in-place. Read the repo's `AGENTS.md` for which
-  applies. **MAJOR**
+- A BDR changed without its `**Version:**` bumped, or superseded by a new record instead
+  of edited in place; an ADR edited in place instead of superseded. A repo `AGENTS.md`
+  that states another convention wins. **MAJOR**
+- A test or `DEV-NOTE:` still quoting a changed or removed BDR rule. **MAJOR**
 - Cross-repo rule references not prefixed with the owning repo. **MINOR**
 
 ## tests — Test quality

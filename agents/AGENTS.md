@@ -287,7 +287,7 @@ rules, not a replacement for this one. A repo with no BDRs still owes tests for 
 
 When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDRs before
 changing assertions. A failing test may protect a business rule — fix the code, not the test,
-unless a BDR has been explicitly superseded. When in doubt, ask the user before modifying test assertions.
+unless the current version of the BDR changed or removed that rule. When in doubt, ask the user before modifying test assertions.
 
 ### New code coverage is at least 80 % (repos with a SonarQube gate)
 
@@ -451,9 +451,20 @@ If a project has `docs/bdr/` (Business Decision Records) or `docs/adr/` (Archite
   sites where the connection to a decision record is non-obvious. Always prefix the record ID with
   the owning repo name (e.g. `order-service/BDR-001`), also for records in the current repo — so a
   reference stays unambiguous when the record lives in another repo.
-- **Never modify** existing BDRs/ADRs — supersede them with a new numbered record. Narrow
-  additive exception: rule numbering and an `## Observability` section may be added to an
-  existing record, since neither changes what the record decided. Rule text itself is immutable.
+- **Read the current file** before relying on a BDR rule. A rule quoted from memory, a session
+  summary, or an earlier conversation may come from an older version; the file wins.
+- **BDRs change in place.** A changed business decision is edited into the existing record, and its
+  `**Version:**` is incremented with every change. Never write a new record to supersede a BDR.
+  Bigger changes get one brief line in the record's `## Changelog`; the full diff lives in git.
+  A removed rule or record keeps its ID with the text replaced by `Removed (vN): <reason>`; IDs
+  are never reused. Tests and `DEV-NOTE:` references to a changed or removed rule are updated in
+  the same change.
+- **Migrate legacy supersede chains when touched.** A change to a BDR that supersedes or is
+  superseded by another record migrates the whole chain in the same change: see the bdr skill,
+  rule 8.
+- **ADRs are never modified** — supersede them with a new numbered record. Narrow additive
+  exception: rule numbering and an `## Observability` section may be added to an existing ADR,
+  since neither changes what the record decided. ADR rule text itself is immutable.
 
 ## Context7
 

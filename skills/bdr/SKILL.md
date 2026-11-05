@@ -23,8 +23,9 @@ Every BDR follows this template:
 ```markdown
 # BDR-NNN: <Short Decision Title>
 
-**Status:** Active | Superseded by BDR-XXX | Active, except R2, which BDR-XXX (YYYY-MM-DD) supersedes
-**Date:** YYYY-MM-DD
+**Status:** Active | Removed
+**Version:** 1
+**Date:** YYYY-MM-DD (last change)
 **Source:** <Jira ticket / Confluence link / stakeholder, if known>
 
 ## Rule
@@ -45,6 +46,11 @@ Every BDR follows this template:
 <Per rule: how a violation becomes visible — the log line, the audit/history entry, and the
 metric, or the automated check that fails. A rule that is an architectural absence (no user
 table, no push credential) says so: the absence appearing is the alarm.>
+
+## Changelog
+
+<Optional. One brief line per bigger change, newest first:
+`- v3 (YYYY-MM-DD): R2 removed, refunds are manual again (STAR-123).`>
 ```
 
 Each rule ID (`BDR-NNN-Rn`) is what tests carry in their name (`TestBDR016R1_…`) and what
@@ -60,11 +66,12 @@ the current repo, so cross-repo references are unambiguous.
 
 1. **One decision per BDR.** Split it into numbered rules, each testable on its own; don't bundle unrelated decisions.
 2. **Number sequentially.** `docs/bdr/NNN-short-slug.md`. Check existing files: `ls docs/bdr/`.
-3. **Add it to the index.** Add a row to the table in `docs/bdr/README.md` (`| [NNN](NNN-slug.md) | Title | Status |`), and update the status column of any record it supersedes.
-4. **Immutable once active.** Don't edit old BDRs to reflect new reality — write a new one that supersedes. Only rule numbering and an `## Observability` section may be added to an existing record.
+3. **Add it to the index.** Add a row to the table in `docs/bdr/README.md` (`| [NNN](NNN-slug.md) | Title | Status |`).
+4. **Change in place, bump the version.** A changed business decision is edited into the existing record; never write a new record that supersedes it. Increment `**Version:**` and set `**Date:**` with every change, typo fixes included. Bigger changes (a rule added, changed in meaning, or removed) get one brief line in `## Changelog`; the full diff lives in git. Update the tests and `DEV-NOTE:` references of every changed rule in the same change.
 5. **Source matters.** Link the origin (Jira, Confluence, Slack thread, stakeholder name) when known.
 6. **Keep it short.** 1-2 paragraphs per section. Each rule should be quotable in one breath.
-7. **Status transitions:** Active (current truth) → Superseded (new BDR replaces), or partially superseded with the superseded rules named in the status line.
+7. **Removing.** A removed rule keeps its line with the ID unbolded, so rule-coverage checks no longer count it: `- BDR-NNN-R2 — Removed (v4): <reason>.` A removed record keeps its file and number, its content is replaced by `Removed (vN): <reason>.`, `**Status:**` becomes `Removed` (also in the index), and the version is bumped. Delete or rename the tests of removed rules. IDs are never reused; a new rule gets the next unused number.
+8. **Migrate legacy supersede chains when touched.** Older records may still supersede each other. When a change touches a record that supersedes, or is superseded by, another, migrate the chain in the same change: the superseding record keeps its rules and IDs (so its tests keep their names), drops the "supersedes" wording from its status, and gets `**Version:**` (records without one count as v1). Each superseded rule in the older record becomes `- BDR-OLD-Rn — Removed (vN): replaced by BDR-NEW-Rm.`; a fully superseded record becomes `Removed (vN): replaced by BDR-NEW.` with `**Status:** Removed`. Status becomes `Active` or `Removed` in the files and the index. Add one `## Changelog` line per migrated record.
 
 ## Naming Convention
 
