@@ -11,9 +11,9 @@
  *   - JFLOW_MCP_URL unset: spawns `jflow mcp` (stdio) as a child of pi, so it
  *     runs with pi's (sandboxed) permissions. No-op when `jflow` is not on PATH.
  *   - JFLOW_MCP_URL set (e.g. http://127.0.0.1:8765/): connects to a server
- *     started outside the sandbox with `jflow mcp --http 127.0.0.1:8765`, so
- *     git/gh/acli get ~/.ssh and credentials. The sandbox must allow that
- *     localhost port.
+ *     started outside the sandbox with `jflow mcp --http 127.0.0.1:8765`
+ *     (bin/my-pi-start does this when jflow is on PATH), so git/gh/acli get
+ *     ~/.ssh and credentials. The sandbox must allow that localhost port.
  *
  * Every tool except the read-only ones in READ_ONLY needs confirmation: they
  * create Jira tasks, commit, push and open PRs. Without a UI they are blocked.

@@ -1,6 +1,8 @@
 #!/usr/bin/env fish
-# Starts the my-pi host proxies: GitHub MCP (ghmcp, 127.0.0.1:8082) and Go
-# modules (gomodproxy, 127.0.0.1:8083). A proxy already listening is left alone.
+# Starts the my-pi host proxies: GitHub MCP (ghmcp, 127.0.0.1:8082), Go
+# modules (gomodproxy, 127.0.0.1:8083) and, when jflow is on PATH, the jflow
+# MCP server (jflow mcp --http, 127.0.0.1:8765, the JFLOW_MCP_URL of the
+# jflow-mcp extension). A server already listening is left alone.
 # Run from a host terminal after each login, never from an omp session.
 #
 # Copied to ~/bin by my-pi/setup.fish. ghmcp and gomodproxy come from the
@@ -9,4 +11,35 @@
 set -l failed 0
 ghmcp start; or set failed 1
 gomodproxy start; or set failed 1
+
+if command -q jflow
+    set -l port 8765
+    set -l logfile ~/.local/state/jflowmcp.log
+    if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
+        echo "jflow mcp: port $port already in use"
+    else
+        mkdir -p (path dirname $logfile)
+        # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
+        # process with a tty stdin is stopped by SIGTTIN.
+        nohup jflow mcp --http 127.0.0.1:$port </dev/null >$logfile 2>&1 &
+        set -l pid $last_pid
+        disown
+        set -l up 0
+        for i in (seq 10)
+            if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
+                set up 1
+                break
+            end
+            kill -0 $pid 2>/dev/null; or break
+            command sleep 1
+        end
+        if test $up -eq 1
+            echo "jflow mcp: up on http://127.0.0.1:$port/ (log: $logfile)"
+        else
+            echo "jflow mcp: not listening; see $logfile" >&2
+            set failed 1
+        end
+    end
+end
+
 exit $failed
