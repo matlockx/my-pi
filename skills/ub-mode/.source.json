@@ -7,8 +7,9 @@
 	"kind": "dir",
 	"updates": true,
 	"files": {
+		"LICENSE": "28dd8b5d6311ca1aaa71276043c0e975dc9e9766",
 		"README.md": "c54164fb5a21a0f917e081fd54c959d4d235ea01",
 		"SKILL.md": "9ac940b23b61d77e8e5192721d7b6066357f892c"
 	},
-	"updatedAt": "2026-11-01T07:57:42.614Z"
+	"updatedAt": "2026-11-04T10:26:28.255Z"
 }
