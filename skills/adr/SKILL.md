@@ -69,6 +69,16 @@ docs/adr/002-another-decision.md
 
 The number is zero-padded to 3 digits. The slug should be 3-5 words max.
 
+## When to write one
+
+Offer an ADR only when all three hold (adapted from mattpocock/skills `domain-modeling`, MIT):
+
+1. **Hard to reverse**: changing course later has a real cost.
+2. **Surprising without context**: a future reader would ask "why did they do it this way?".
+3. **A real trade-off**: genuine alternatives existed and one won for stated reasons.
+
+If any is missing, skip the ADR; a `DEV-NOTE:` or the commit message carries the reason.
+
 ## When NOT to write an ADR
 
 - Trivial implementation choices (variable naming, loop style)

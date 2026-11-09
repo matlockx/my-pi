@@ -10,9 +10,9 @@ When unsure, **ask the developer** before making changes.
 | G-2 | Follow lint/style configs (`.golangci.yml`, `pyproject.toml`, `.prettierrc`) | Re-format to other styles |
 | G-3 | Ask confirmation for >300 LOC or >3 files | Refactor large modules without guidance |
 | G-4 | Stay in current task context | Continue prior task after "new task" |
-| G-5 | Name custom HTTP headers without a prefix (`Request-Id`, `Correlation-Id`) | Use the deprecated `X-` prefix (RFC 6648) |
-| G-6 | Set `User-Agent` to the calling service's own name on every outbound call to an internal service | Leave the Go default (`Go-http-client/1.1`) or an empty UA |
-| G-7 | Use British English everywhere (`cancelled`, `behaviour`, `initialise`, `colour`) | Mix in US spellings (`canceled`, `behavior`, `initialize`, `color`) |
+| G-5 | Name custom HTTP headers without a prefix (`Request-Id`, `Correlation-Id`) | Use the deprecated `X-` prefix (RFC 6648); existing `X-` headers stay only for compatibility |
+| G-6 | Set `User-Agent` to the calling service's own name on every outbound call to an internal service, once on the shared `http.Client`/transport | Leave the Go default (`Go-http-client/1.1`) or an empty UA, or set it per request |
+| G-7 | Use British English everywhere: code identifiers, comments, docs, commit messages, logs, UI copy (`cancelled`, `behaviour`, `initialise`, `colour`) | Mix in US spellings (`canceled`, `behavior`, `initialize`, `color`); exception: third-party API fields and language keywords keep their spelling (CSS `color`, `initializeApp`) |
 | G-8 | Multi-repo change: list changes per repo, ask for external code review, ask for a commit | Report only a summary or commit without asking |
 | G-9 | Golden Helm chart template: pass config to internal services via **env variables** | Use command line args/`args:`/`command:` (if truly unavoidable, say so and wait for user confirmation) |
 | G-10 | Multi-repo change: `git fetch origin` (or pull) each repo's `main` **before** research/lookups | Reason about code from a stale local checkout |
@@ -20,10 +20,10 @@ When unsure, **ask the developer** before making changes.
 | G-12 | Caller-specific rationale goes at the call site as `DEV-NOTE:`; doc comments state the contract only | Explain one caller's wiring in the callee's doc comment |
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
-| G-15 | New/changed code passes the repo's coverage gate before reporting done: with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI) **≥ 80 %** line+branch coverage, measured locally; otherwise every added or changed function at **CRAP ≤ 10** (`crapper --changed --threshold 10`). `crapper` not installed → report the gate as not run and point to `/skill-install ub-mode` | Ship over the gate, pad with assertion-free tests, extend `sonar.*exclusions` to pass, run Sonar scans nobody asked for, or report done without saying the gate was not run |
+| G-15 | New/changed code passes the repo's coverage gate once, before it is pushed for review (see "When the quality gates run"): with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI) **≥ 80 %** line+branch coverage, measured locally; otherwise every added or changed function at **CRAP ≤ 10** (`crapper --threshold 10 <files the branch changed>`). `crapper` not installed → report the gate as not run and point to `/skill-install ub-mode` | Push over the gate, pad with assertion-free tests, extend `sonar.*exclusions` to pass, run Sonar scans nobody asked for, rerun the gate after every task, or push without saying the gate was not run |
 | G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 | G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
-| G-18 | New/changed code leaves no `dryer --threshold 0.8` duplicate candidate touching the change: extract the shared logic or reuse what exists | Copy a function and tweak it; gate with `dryer --changed`, which never compares against untouched files |
+| G-18 | New/changed code leaves no `dryer --threshold 0.8` duplicate candidate touching the change, checked once before it is pushed for review: extract the shared logic or reuse what exists | Copy a function and tweak it; gate with `dryer --changed`, which never compares against untouched files |
 
 ## Asking the User (HARD RULE)
 
@@ -289,6 +289,20 @@ When tests break during refactoring: if `docs/bdr/` exists, consult relevant BDR
 changing assertions. A failing test may protect a business rule — fix the code, not the test,
 unless the current version of the BDR changed or removed that rule. When in doubt, ask the user before modifying test assertions.
 
+### When the quality gates run
+
+The coverage gate (Sonar 80 % or CRAP) and the duplication gate (dryer) run **once before the work
+is pushed**, not after every task: before `jflow_pr` creates or updates a PR, before
+`jflow_review_resolve` pushes fixes, before any other push, and whenever the user asks for them.
+The coverage gate reruns the whole test suite with coverage and dryer rescans the whole repo, which
+is slow and CPU-heavy, and their findings only matter to what gets pushed.
+
+- During the work, run the tests of the package or file being changed, and the full suite once
+  when the task is done. Tests for new code are still written in the same task ("New code is
+  tested by default").
+- A task report without a gate run says so in one line: `Quality gates: not run (run before push)`.
+- At the gate run, fix what the gates report before pushing, as the sections below describe.
+
 ### New code coverage is at least 80 % (repos with a SonarQube gate)
 
 Applies only when the repo has a SonarQube gate: a `sonar-project.properties` file, or a Sonar
@@ -299,7 +313,7 @@ The gate fails a PR when coverage on new code is below **80 %**. Coverage on new
 line and branch (condition) coverage over every added or changed line, exemptions above
 included: an untested accessor or wiring file still counts against the gate.
 
-- Before reporting work done, run the repo's coverage tool (`go test -coverprofile`,
+- At the gate run, run the repo's coverage tool (`go test -coverprofile`,
   `pytest --cov`, `vitest --coverage`, …) and check the changed lines and branches, not the
   package total. Report the figure for the changed files.
 - Below 80 % → add tests for the uncovered branches until the changed code reaches it. Error
@@ -312,18 +326,21 @@ included: an untested accessor or wiring file still counts against the gate.
 
 ### Complexity-weighted coverage (CRAP), repos without a SonarQube gate
 
-Every function added or changed in the task scores **CRAP ≤ 10**, as computed by `crapper`
+Every function added or changed on the branch scores **CRAP ≤ 10**, as computed by `crapper`
 (from the ub-mode skill's tools): CRAP = complexity² × (1 − coverage)³ + complexity. A function
 with complexity 1–2 passes without a test; a branching function needs tests in proportion to its
 branches; complexity above 10 fails even when fully covered and has to be split.
 
-- Before reporting work done, run `crapper --changed --threshold 10` from the repo root. It runs
-  the tests with coverage and scores every function in the files changed in git (untracked files
-  included). `--use-existing-coverage` re-scores without rerunning the tests.
-- The gate is the functions the task added or changed. The exit code (2 when any scored function
-  is over the threshold) also counts older functions in the same files, so read the report rather
-  than the exit code. Report the worst score among the task's functions, and list older ones over
-  10 without fixing them unasked.
+- At the gate run, run `crapper --threshold 10 <files>` from the repo root, passing the files the
+  branch added or modified (`git diff --name-only --diff-filter=AM origin/<base>...HEAD`, where
+  `<base>` is the PR's base branch, usually `main`, plus any uncommitted ones). It runs the tests
+  with coverage and scores every function in those files;
+  non-source files are ignored. `--changed` reads `git status` only, so it scores nothing once
+  the work is committed. `--use-existing-coverage` re-scores without rerunning the tests.
+- The gate is the functions the branch added or changed. The exit code (2 when any scored
+  function is over the threshold) also counts older functions in the same files, so read the
+  report rather than the exit code. Report the worst score among the branch's functions, and list
+  older ones over 10 without fixing them unasked.
 - Over 10 → add tests for the uncovered branches, or split the function, until it passes. Real
   assertions only, as above. The exemptions in "New code is tested by default" still apply when
   named (wiring such as an extension's registration function scores high at 0 % coverage).
@@ -339,14 +356,14 @@ branches; complexity above 10 fails even when fully covered and has to be split.
 ### Duplication (dryer), every repo
 
 New or changed code does not duplicate existing code: no `dryer` candidate at **similarity ≥ 0.8**
-may have a side in code the task added or changed. This applies on top of the coverage gate, with
+may have a side in code the branch added or changed. This applies on top of the coverage gate, with
 or without SonarQube. dryer comes with the ub-mode skill's tools, like crapper.
 
-- Before reporting work done, run `dryer --threshold 0.8` from the repo root. Never gate with
+- At the gate run, run `dryer --threshold 0.8` from the repo root. Never gate with
   `--changed`: it compares the changed files only with each other, so code copied from an
   untouched file passes unseen.
 - dryer exits 0 whether or not it finds candidates, so read the report. A candidate counts when
-  one of its two line ranges overlaps the task's changes. Report each such pair, and list older
+  one of its two line ranges overlaps the branch's changes. Report each such pair, and list older
   pairs outside the change without fixing them unasked.
 - Hit → extract the shared logic into one function and call it from both places, or reuse the
   existing one. Two forms that match in shape but not in meaning (mappers for unrelated records)
@@ -472,13 +489,9 @@ Use `ctx7` first for library/API lookups: `npx ctx7@latest library <name>` then 
 
 ## BEADS (opt-in)
 
-Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
+Use beads (`bd`) only when the user explicitly asks. Otherwise use to-do lists.
 
 **NEVER** add beads issue IDs (e.g. `bd-123`) into code as comments. Beads IDs belong in the issue tracker, not the source.
-
-## Workflow
-
-1. Check `AGENTS.md` files → 2. Clarify ambiguities → 3. Plan → 4. Trivial: go. Non-trivial: present plan → 5. Track progress → 6. Update docs/anchors → 7. User review
 
 ## Never Do
 
@@ -487,18 +500,10 @@ Load `beads` skill only when user explicitly asks. Otherwise use to-do lists.
 - Alter migration files
 - Commit secrets
 - Add a `replace` directive to `go.mod` (use a local, gitignored `go.work` instead)
-- Call an internal service without an identifying `User-Agent` (set it once on the shared `http.Client`/transport, not per request)
-- Introduce HTTP headers prefixed with `X-` (deprecated by RFC 6648; only keep existing ones for compatibility)
-- Mix US and British spelling (British English only: code identifiers, comments, docs, commit messages, logs, UI copy; exception: third-party API fields and language keywords keep their original spelling, e.g. CSS `color`, `initializeApp`)
-- Pass config to a service via Helm `args:`/`command:` when an env variable would do (golden chart template: env only; no other way → inform user, wait for confirmation)
 - Assume business logic
-- Insert a new declaration between an existing comment block and the declaration it documents (anchor edits on the first line of the comment block, not the declaration line)
-- Put one caller's rationale in the callee's doc comment (call-site `DEV-NOTE:` instead; doc comment keeps only constraints binding on all callers)
-- Write doc comments that anthropomorphise a system (`verbatim from the provider when it says`) instead of naming the source (`verbatim from the provider response, when present`)
-- Remove DEV- comments
 - Use emojis in documentation, commit messages, or any written output
 
-Optimize for maintainability. When in doubt, choose boring.
+Optimise for maintainability. When in doubt, choose boring.
 
 ## Files to NOT modify
 

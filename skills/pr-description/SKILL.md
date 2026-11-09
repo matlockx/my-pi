@@ -28,8 +28,8 @@ Use the first that exists, read from the working tree (or `get_file_contents` on
 3. `.github/PULL_REQUEST_TEMPLATE/*.md` — several templates: ask which one applies
 4. `notes/prs/pr_description.md`
 
-No template: use **Why**, **What changed**, **How to verify**, **Risks and rollback**, and say
-that no template was found.
+No template: use **Why**, **What changed**, **Evidence**, **Merge danger**, and say that no
+template was found.
 
 ## 3. Check the existing description
 
@@ -57,6 +57,13 @@ Read referenced code that the diff does not show when it is needed to explain th
   removed flags. These go near the top.
 - Changed metrics, alerts or dashboards (AGENTS.md: metric changes list their consumers).
 - Decision records (`docs/bdr`, `docs/adr`) the change implements or touches, by ID.
+- Evidence that it works: a before/after pair (failing then passing test run, command output,
+  screenshot for UI), not only "tests pass".
+- Merge danger: a **one-way door** (destructive or hard to roll back: data migration, deleted
+  data, published event schema, external contract) or a **two-way door** (a revert undoes it),
+  and the **blast radius** (which consumers, services or users a fault reaches). Goes into the
+  template's risk or rollback section; a template without one gets a short **Merge danger**
+  section after its last section. Adapted from mattpocock/skills `pr` (MIT).
 
 ## 6. Verification items
 

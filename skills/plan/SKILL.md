@@ -22,8 +22,11 @@ a time with a recommendation, G-14) come from AGENTS.md and apply here in full.
 
 1. Restate the goal in one or two sentences: what should be true when the work is done.
 2. Research the current state: the code involved, its tests, `DEV-*` anchors, decision records
-   (`docs/bdr`, `docs/adr`), and existing plans in `notes/specs/`.
-3. Ask the questions the code cannot answer, one at a time.
+   (`docs/bdr`, `docs/adr`), the domain terms in `GLOSSARY.md` (glossary skill), and existing
+   plans in `notes/specs/`.
+3. Ask the questions the code cannot answer, one at a time, the question that blocks the most
+   work first. Word each so that "yes" accepts the recommendation. Facts are not questions: look
+   them up (a `scout` task for broad searches) instead of asking the user.
 
 ## 2. Design
 
