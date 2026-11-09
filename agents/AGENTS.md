@@ -21,7 +21,7 @@ When unsure, **ask the developer** before making changes.
 | G-13 | Insert new declarations **above** an existing comment block; comment and declaration move as one unit | Insert between a comment block and the declaration it documents |
 | G-14 | **HARD RULE.** Every decision put to the user is a decidable question (context, options, recommendation, cost of deferring), asked **one at a time**, with a recommendation that says why it wins **and why every other option loses** | List bare topics, statuses, or headings under "open questions"; dump several questions in one block; offer options without a recommendation or without saying why the others lose |
 | G-15 | New/changed code passes the repo's coverage gate once, before it is pushed for review (see "When the quality gates run"): with a SonarQube gate (`sonar-project.properties`, or a Sonar step in CI) **≥ 80 %** line+branch coverage, measured locally; otherwise every added or changed function at **CRAP ≤ 10** (`crapper --threshold 10 <files the branch changed>`). `crapper` not installed → report the gate as not run and point to `/skill-install ub-mode` | Push over the gate, pad with assertion-free tests, extend `sonar.*exclusions` to pass, run Sonar scans nobody asked for, rerun the gate after every task, or push without saying the gate was not run |
-| G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
+| G-16 | Before changing a metric (counter, gauge, histogram, timer, meter), search memory and every alert/dashboard repo for its name and labels; fix the consumers in the same change; labelled counters start at zero. Full rules: `rule://metrics` (injected by omp when an edit writes metric code) | Rename, re-label, retype, or remove a metric without knowing which alert or dashboard reads it |
 | G-17 | **HARD RULE.** Run subagents one at a time by default. Before starting **any** agents in parallel (or any fan-out of several agents), ask first and state the consequences: how many agents, what each does, expected duration, the token/cost multiplier (each agent re-reads repo, docs and KB on its own), shared-file or merge risks, and the sequential alternative | Spawn parallel agents (or several background agents at once) without asking, even when the user said "do all now" or "go" |
 | G-18 | New/changed code leaves no `dryer --threshold 0.8` duplicate candidate touching the change, checked once before it is pushed for review: extract the shared logic or reuse what exists | Copy a function and tweak it; gate with `dryer --changed`, which never compares against untouched files |
 
@@ -331,60 +331,13 @@ Every business rule declares, in its record, how a violation becomes visible: th
 audit/history entry, and the metric. Tests assert those, not only the happy outcome — an
 unplanned edge case must show up in monitoring rather than silently corrupting state.
 
-### Labelled counters start at zero
+### Metrics
 
-A Prometheus counter vector creates a series on its first increment, already at 1. `increase()`
-and `rate()` never see that first event, and a counter that never moved is not a field in the
-metrics store, so an ES|QL panel over it fails with `Unknown column`. Apply the following directly,
-without asking, whenever code adds, changes, or increments a labelled counter in a service:
-
-- Create every label combination the service can emit at 0 on start (`vec.WithLabelValues(...)`
-  without `Inc()`), before the first message, request, or job pass. Closed label sets come from
-  the constants the increment sites use; open ones (topics, job names, enabled checks) come from
-  the configured set, at the call site that knows it.
-- A list that mirrors constants carries a `DEV-NOTE:` naming the constants it must stay in step
-  with. Label values used in more than one place become named constants.
-- The test calls the same initialisation functions start-up calls (extract them if inlined) and
-  asserts, per metric, the series count (`testutil.GatherAndCount(prometheus.DefaultGatherer,
-  name)`) and that every gathered series is 0, so a missing or pre-incremented combination fails.
-- Dashboards over such counters drop zero buckets (`| WHERE x > 0` after `STATS`), so the legend
-  lists what happened rather than every combination.
-
-References: payment-service `internal/service/payment/service.go` (`init`), order-service
-`internal/event/order.go` (`init`), financial-aggregation-service `InitMetrics` in
-`internal/consumer`, `internal/handler`, `internal/service`, called from `consumers.go` and
-`jobs.go`.
-
-### Metric changes reach their dashboards and alerts
-
-Alerts and dashboards read metrics by name and label, often from another repository. A renamed
-metric or dropped label leaves the panel empty and the alert silent; nothing fails in the service's
-own tests. Apply the following directly, without asking, whenever code changes an existing metric
-instrument (counter, gauge, up-down counter, histogram, summary, timer, meter):
-
-- **What counts as a change**: rename, removal, type change, unit change, histogram bucket change,
-  a label added, removed, or renamed, a label value renamed, and an increment site added, moved, or
-  removed (the series keeps its name but counts something else). A new metric is not a change.
-- **Search before the edit, at least memory**: `memory_recall` with the metric name, its labels,
-  and the service name, across all projects. Memory is the only record of dashboards and alerts
-  built by hand in a UI, which no grep finds.
-- **Then grep every consumer location** for the metric name (also without the `_total`,
-  `_bucket`, `_count`, `_sum`, `_seconds` suffixes) and for each changed label name:
-  - `intl-stardust-gitops`: `infrastructure/modules/elastic-alerting` (ES|QL rules, SLOs, ML jobs),
-    `infrastructure/modules/elastic-dashboards`, `docs/runbooks`. Elastic stores metrics as
-    `metrics.<name>` and labels as `attributes.<label>`.
-  - The service repository itself: Grafana JSON, `PrometheusRule`, Datadog monitors, recording
-    rules, README.
-  - A project with an unknown backend (Grafana, Datadog, other): ask where its alerts and
-    dashboards live, then save the answer with `memory_save`.
-- **Hit**: update the consumer in the same task (multi-repo rules G-8 and G-10 apply), or keep
-  emitting the old name or label until the consumer is migrated. Never leave a consumer pointing at
-  a series the code no longer emits. While older data still holds the field, the query runs and
-  returns nothing, so the alert stays silent; once retention drops it, ES|QL fails with `Unknown
-  column`.
-- **Report**: the work summary lists each changed metric with its consumers as `file:line`, or the
-  locations searched when there are none. A failed `git fetch` of a consumer repository is stated,
-  since the hit list may then be stale.
+Labelled counters start at zero, and a changed metric reaches its dashboards and alerts in the
+same change (G-16). The full rules are the omp rule `metrics` (my-pi `rules/metrics.md`): omp
+injects it when an edit or write adds metric code in Go, Python, Java, Kotlin or TypeScript. Read
+`rule://metrics` before any metric change it did not fire for: a renamed label value, a removed
+increment site, a deleted instrument.
 
 ### Adversarial matrix
 

@@ -19,6 +19,7 @@ Adapted from [mattpocock/skills](https://github.com/mattpocock/skills/tree/4ae23
 | `agents/AGENTS.md` (symlinked as `~/.omp/agent/AGENTS.md`) | every turn, in full | highest: every line, every session |
 | Skill `description` in `skills/<name>/SKILL.md` | every session, in the skill listing (about 80 tokens per skill) | permanent, even when the skill never fires |
 | Skill body and its sibling files | when the agent or the user opens the skill | only when used |
+| omp rule with a `condition` in `rules/<name>.md` (TTSR) | when an edit, write or reply matches its regex; omp interrupts and injects it | none until it fires; reliable only for what the regex can see |
 | Prompt in `prompts/<name>.md` | only when the user types `/<name>` | none for the agent; the user has to remember it exists |
 | Doc reached by a pointer | when the pointer fires | the pointer's line only |
 

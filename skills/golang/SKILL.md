@@ -7,7 +7,7 @@ description: Write and review Go code following SonarCloud SonarGo, golangci-lin
 
 Guide writing and reviewing Go code compliant with SonarCloud SonarGo, golangci-lint (staticcheck, gosec, govet, errcheck, gocritic, revive, etc.), and idiomatic Go best practices. Covers security, reliability, performance, and maintainability.
 
-SonarCloud rules here are writing guidance. Do not run Sonar scans or coverage gates unless the user explicitly asks.
+SonarCloud rules here are writing guidance. Do not run Sonar scans unless the user explicitly asks; coverage and duplication gates run once before a push (AGENTS.md G-15, G-18).
 
 ## When to use me
 

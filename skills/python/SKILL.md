@@ -7,7 +7,8 @@ description: Write and review Python code with uv, Ruff and mypy; covers project
 
 Set up and write Python projects so that Ruff and mypy carry the mechanical rules, and point out
 the rules no configured linter checks. SonarCloud rule IDs appear as references; do not run Sonar
-scans or coverage gates unless the user explicitly asks.
+scans unless the user explicitly asks. Coverage and duplication gates run once before a push
+(AGENTS.md G-15, G-18).
 
 ## Project setup
 

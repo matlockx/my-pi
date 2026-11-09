@@ -7,7 +7,8 @@ description: Write and review TypeScript with strict tsc and typescript-eslint s
 
 Set up and write TypeScript so that `tsc` and typescript-eslint carry the mechanical rules, and
 point out the rules no configured linter checks. SonarCloud rule IDs appear as references; do not
-run Sonar scans or coverage gates unless the user explicitly asks.
+run Sonar scans unless the user explicitly asks. Coverage and duplication gates run once before a
+push (AGENTS.md G-15, G-18).
 
 ## Project setup
 
