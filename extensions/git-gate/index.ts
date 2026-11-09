@@ -1,44 +1,77 @@
 /**
  * Git Gate Extension
  *
- * DEV-NOTE: Hard gate on git commit/push/tag commands.
- * Intercepts bash tool calls and requires explicit user confirmation
- * before executing any git mutation (commit, push, tag operations).
- * This is a safety net on top of AGENTS.md soft instructions.
+ * DEV-NOTE: runs the repository's own pre-commit check before an agent's `git commit`
+ * (owner decision 2026-11-09, after a commit split between two issues reached CI
+ * unformatted). A repository opts in with an executable `dev/check` at its top level:
+ * it checks the staged tree, exit 0 lets the commit run, any other status blocks it
+ * and hands the output to the agent. A repository without `dev/check` commits as before.
+ * The user's approval of a commit stays the chat's "commit"; this gate asks nothing.
  */
+
+import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { blockReason, checkDirs, isCommit, stagingProblem } from "./gate.mjs";
+
+/** How long one dev/check may run before the commit is blocked as timed out. */
+const CHECK_TIMEOUT_MS = 10 * 60 * 1000;
+
 export default function (pi: ExtensionAPI) {
-	// DEV-NOTE: Patterns cover common git mutation commands.
-	// Read-only git commands (status, log, diff, branch --list, etc.) are NOT blocked.
-	const gitMutationPatterns = [
-		/\bgit\s+commit\b/i,
-		/\bgit\s+push\b/i,
-		/\bgit\s+tag\b/i,
-	];
+	/** The top-level directory of the working tree dir is in; "" outside one. */
+	async function repoRoot(dir: string): Promise<string> {
+		try {
+			const out = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir });
+			return out.code === 0 ? out.stdout.trim() : "";
+		} catch {
+			return "";
+		}
+	}
+
+	/** Reports whether root has a dev/check file. */
+	async function hasCheck(root: string): Promise<boolean> {
+		try {
+			return (await stat(path.join(root, "dev", "check"))).isFile();
+		} catch {
+			return false;
+		}
+	}
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
 
-		const command = event.input.command as string;
-		const matchedPattern = gitMutationPatterns.find((p) => p.test(command));
+		const input = event.input as { command?: unknown; cwd?: unknown };
+		const command = typeof input.command === "string" ? input.command : "";
+		if (!isCommit(command)) return undefined;
 
-		if (!matchedPattern) return undefined;
-
-		if (!ctx.hasUI) {
-			return { block: true, reason: "Git mutation blocked — no UI available for confirmation" };
+		const base = typeof input.cwd === "string" ? path.resolve(ctx.cwd, input.cwd) : ctx.cwd;
+		const roots = new Set<string>();
+		for (const dir of checkDirs(command, base, homedir())) {
+			const root = await repoRoot(dir);
+			if (root && (await hasCheck(root))) roots.add(root);
 		}
+		if (roots.size === 0) return undefined;
 
-		const ok = await ctx.ui.confirm(
-			"🔒 Git mutation detected",
-			`Command:\n\n  ${command}\n\nAllow this git operation?`,
-		);
+		const problem = stagingProblem(command);
+		if (problem) return { block: true, reason: problem };
 
-		if (!ok) {
-			return { block: true, reason: "Git operation blocked by user" };
+		for (const root of roots) {
+			if (ctx.hasUI) ctx.ui.notify(`git-gate: running ${path.join(root, "dev", "check")}`, "info");
+
+			const script = path.join(root, "dev", "check");
+			try {
+				const result = await pi.exec(script, [], { cwd: root, timeout: CHECK_TIMEOUT_MS });
+				if (result.code !== 0) return { block: true, reason: blockReason(root, result) };
+			} catch (err) {
+				return {
+					block: true,
+					reason: `git-gate: ${script} could not run (${err instanceof Error ? err.message : String(err)}); the commit did not run.`,
+				};
+			}
 		}
-
 		return undefined;
 	});
 }
