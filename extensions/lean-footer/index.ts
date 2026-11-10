@@ -25,17 +25,20 @@
  * DEV-NOTE: pi's real footer lives in core dist/modes/interactive/
  * components/footer.js and dims everything uniformly. A theme can't split
  * in/out families because the footer hardcodes the dim wrap — so we override
- * the whole footer here instead. Field semantics mirror that file exactly:
+ * the whole footer here instead. Field semantics mirror that file:
  *   ↑ usage.input · ↓ usage.output · R usage.cacheRead · W usage.cacheWrite
  *   CH = cacheRead/(input+cacheRead+cacheWrite) of the LAST assistant msg.
+ * Unlike that file, the counters restart at each /handoff (usage.mjs); ⇄N counts
+ * the handoffs and Σ$ keeps the session total.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+import { usageTotals } from "./usage.mjs";
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "lean-footer.json");
 
@@ -80,7 +83,7 @@ const COL = {
 };
 
 const fmt = (n: number): string =>
-	n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`;
+	n < 1000 ? `${n}` : n < 1e6 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1e6).toFixed(1)}M`;
 
 // DEV-NOTE: omp (Bun host) keeps ctx.ui.setFooter() as a no-op and draws its own
 // status line, which already shows path, git, model and context fill. Under omp
@@ -91,28 +94,20 @@ const WIDGET_KEY = "lean-footer";
 
 type Ctx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
-/** Session-total token/cost segments as [plain, colored] pairs. */
+/**
+ * Token/cost segments as [plain, colored] pairs. After a /handoff the tokens and the first
+ * cost cover only the requests since the last handoff, and the session total follows as
+ * `Σ$…`; the session keeps its id across a handoff, so its own totals never reset.
+ */
 function usageParts(ctx: Ctx): Array<[string, string]> {
-	let input = 0,
-		output = 0,
-		cacheRead = 0,
-		cacheWrite = 0,
-		cost = 0;
-	let ch: number | undefined;
-	for (const e of ctx.sessionManager.getEntries()) {
-		if (e.type === "message" && e.message.role === "assistant") {
-			const u = (e.message as AssistantMessage).usage;
-			input += u.input;
-			output += u.output;
-			cacheRead += u.cacheRead;
-			cacheWrite += u.cacheWrite;
-			cost += u.cost.total;
-			const prompt = u.input + u.cacheRead + u.cacheWrite;
-			ch = prompt > 0 ? (u.cacheRead / prompt) * 100 : undefined;
-		}
-	}
+	const { session, sinceHandoff, handoffs, cacheHit: ch } = usageTotals(ctx.sessionManager.getEntries());
+	const { input, output, cacheRead, cacheWrite, cost } = sinceHandoff;
 
 	const parts: Array<[string, string]> = [];
+	if (handoffs > 0) {
+		const s = `⇄${handoffs}`;
+		parts.push([s, c(COL.dim, s)]);
+	}
 	if (input)
 		parts.push([`↑${fmt(input)}`, c(COL.inFresh, `↑${fmt(input)}`, true)]);
 	if (output)
@@ -129,7 +124,8 @@ function usageParts(ctx: Ctx): Array<[string, string]> {
 		? ctx.modelRegistry?.isUsingOAuth?.(ctx.model)
 		: false;
 	if (cost || usingSub) {
-		const s = `$${cost.toFixed(3)}${usingSub ? " (sub)" : ""}`;
+		const total = handoffs > 0 ? ` Σ$${session.cost.toFixed(3)}` : "";
+		const s = `$${cost.toFixed(3)}${total}${usingSub ? " (sub)" : ""}`;
 		parts.push([s, c(COL.cost, s, true)]);
 	}
 	return parts;
