@@ -229,21 +229,6 @@ commit and returns its output. Stage and commit in separate commands, and never 
 so the gate refuses that command. Split one file between commits with a patch that keeps its
 context lines (`git apply --cached`), never with `--unidiff-zero`.
 
-### kafka-events: commit sources only (MUST)
-
-In `kafka-events`, a feature commit contains **only** `idl/**/*.avdl` plus the documentation
-that describes it (`README.md`, `docs/`). **Never** stage or commit `gen/`, `uv.lock`,
-`pyproject.toml` or `CHANGELOG.md`. The release workflow (`.github/workflows/release.yaml`)
-formats the IDL, runs `build.py` and commits `gen/` itself as "Update generated files for vX"
-after the merge to `main`; generated files on a branch duplicate that commit and bloat the PR.
-
-- Run `uv run build.py` and the check scripts locally to verify, then restore the tree:
-  `git checkout -- gen uv.lock` and `git clean -fd gen` (or run `./build-test.sh`, which does
-  both).
-- Before every `git add`, check `git status --porcelain`: anything under `gen/` is a mistake.
-- A branch that already carries `gen/` changes gets a follow-up commit restoring `gen/` to
-  `origin/main` (precedent: `da9f98c` "drop generated files from the branch").
-
 ### Multi-repo changes
 
 Before researching or reasoning about code in a multi-repo task, **MUST** fetch/pull the latest
