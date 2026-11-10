@@ -243,6 +243,8 @@ export default function leanFooter(pi: ExtensionAPI) {
 		pi.on("agent_end", async (_event, ctx) => publishStatus(ctx));
 		pi.on("session_compact", async (_event, ctx) => publishStatus(ctx));
 		pi.on("model_select", async (_event, ctx) => publishStatus(ctx));
+		// /resume, /fork and RPC switch_session load another file without a session_start.
+		pi.on("session_switch", async (_event, ctx) => publishStatus(ctx));
 	}
 
 	pi.registerCommand("footer-colors", {
