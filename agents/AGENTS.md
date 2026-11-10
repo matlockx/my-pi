@@ -101,6 +101,9 @@ Example of the same point asked properly:
 - Shell: **fish** syntax. No `$()` or `export VAR=value`.
 - **Never commit/push** without explicit approval.
 - **Use `rg`** instead of `grep`.
+- **Images in GitHub issues, PRs and comments** (`https://github.com/user-attachments/assets/<uuid>`):
+  `read http://127.0.0.1:8082/asset?url=<URL-encoded link>` (my-pi GitHub MCP proxy, which adds
+  the token). A direct fetch answers 404 for private repositories.
 
 ## Skill Auto-Loading
 
