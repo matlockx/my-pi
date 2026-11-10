@@ -100,7 +100,7 @@ Example of the same point asked properly:
 
 - Shell: **fish** syntax. No `$()` or `export VAR=value`.
 - **Never commit/push** without explicit approval.
-- **Use `rg`** instead of `grep`.
+- **Search with the `grep` tool**, not `grep`/`rg` in bash (omp `bashInterceptor` blocks them); `rg` in a pipe (`kubectl logs … | rg error`) is fine.
 - **Images in GitHub issues, PRs and comments** (`https://github.com/user-attachments/assets/<uuid>`):
   `read http://127.0.0.1:8082/asset?url=<URL-encoded link>` (my-pi GitHub MCP proxy, which adds
   the token). A direct fetch answers 404 for private repositories.

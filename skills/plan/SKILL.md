@@ -11,7 +11,7 @@ a time with a recommendation, G-14) come from AGENTS.md and apply here in full.
 ## Ground rules
 
 - **Read-only.** Use `read`, `grep`, `glob`, `lsp`, `web_search` and read-only shell commands
-  (`git log`, `git diff`, `git show`, `go list`, `rg`). No `edit`, no `write` except the spec
+  (`git log`, `git diff`, `git show`, `go list`). No `edit`, no `write` except the spec
   file in section 5, no installs, builds, test runs or commits. For a session where read-only is
   enforced by the harness, the user can switch on omp's plan mode (`Alt+Shift+P`).
 - **Delegate broad exploration** (where things live, how they work, similar implementations) to a
