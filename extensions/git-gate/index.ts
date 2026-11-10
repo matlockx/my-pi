@@ -5,7 +5,9 @@
  * (owner decision 2026-11-09, after a commit split between two issues reached CI
  * unformatted). A repository opts in with an executable `dev/check` at its top level:
  * it checks the staged tree, exit 0 lets the commit run, any other status blocks it
- * and hands the output to the agent. A repository without `dev/check` commits as before.
+ * and hands the output to the agent. A repository without `dev/check`, or with an
+ * executable pre-commit hook of its own (core.hooksPath included), commits as before:
+ * git runs that hook on every commit, so the repository decides what a commit checks.
  * The user's approval of a commit stays the chat's "commit"; this gate asks nothing.
  */
 
@@ -40,6 +42,20 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** Reports whether git in root runs an executable pre-commit hook (core.hooksPath included). */
+	async function hasOwnHook(root: string): Promise<boolean> {
+		try {
+			const out = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"], {
+				cwd: root,
+			});
+			if (out.code !== 0) return false;
+			const hook = await stat(out.stdout.trim());
+			return hook.isFile() && (hook.mode & 0o111) !== 0;
+		} catch {
+			return false;
+		}
+	}
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
 
@@ -51,7 +67,9 @@ export default function (pi: ExtensionAPI) {
 		const roots = new Set<string>();
 		for (const dir of checkDirs(command, base, homedir())) {
 			const root = await repoRoot(dir);
-			if (root && (await hasCheck(root))) roots.add(root);
+			// DEV-NOTE: owner, 2026-11-10 (a): a repository's own pre-commit hook replaces the gate. lifepace's
+			// hook runs dev/fix while its dev/check is the full push check, which a commit must not run.
+			if (root && (await hasCheck(root)) && !(await hasOwnHook(root))) roots.add(root);
 		}
 		if (roots.size === 0) return undefined;
 

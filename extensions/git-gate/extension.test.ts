@@ -17,17 +17,21 @@ import extension from "./index.ts";
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
 type Exec = { stdout: string; stderr: string; code: number; killed: boolean };
 
-/** A repository directory, with a dev/check file where withCheck. */
-function repo(withCheck: boolean): string {
+/** A repository directory, with a dev/check file where withCheck and a pre-commit hook of the given mode where hookMode. */
+function repo(withCheck: boolean, hookMode?: number): string {
 	const root = mkdtempSync(path.join(tmpdir(), "git-gate-"));
 	if (withCheck) {
 		mkdirSync(path.join(root, "dev"));
 		writeFileSync(path.join(root, "dev", "check"), "#!/bin/sh\n", { mode: 0o755 });
 	}
+	if (hookMode !== undefined) {
+		mkdirSync(path.join(root, "hooks"));
+		writeFileSync(path.join(root, "hooks", "pre-commit"), "#!/bin/sh\n", { mode: hookMode });
+	}
 	return root;
 }
 
-/** Loads the extension; `git rev-parse` answers root, dev/check answers check. */
+/** Loads the extension; `git rev-parse` answers root (and root/hooks/pre-commit for --git-path), dev/check answers check. */
 function setup(root: string, check: Exec | Error) {
 	let handler: Handler | undefined;
 	const ran: string[] = [];
@@ -37,6 +41,9 @@ function setup(root: string, check: Exec | Error) {
 		},
 		exec: async (cmd: string, args: string[]) => {
 			ran.push([cmd, ...args].join(" "));
+			if (cmd === "git" && args.includes("--git-path")) {
+				return { stdout: `${path.join(root, "hooks", "pre-commit")}\n`, stderr: "", code: 0, killed: false };
+			}
 			if (cmd === "git") return { stdout: `${root}\n`, stderr: "", code: 0, killed: false };
 			if (check instanceof Error) throw check;
 			return check;
@@ -96,4 +103,21 @@ test("a repository without dev/check, other git commands and other tools pass un
 	assert.equal(await call("git push origin main"), undefined);
 	assert.equal(await call("git commit -m x", "read"), undefined);
 	assert.deepEqual(ran, []);
+});
+
+test("a repository with an executable pre-commit hook of its own commits without the gate", async () => {
+	const root = repo(true, 0o755);
+	const { call, ran } = setup(root, { stdout: "", stderr: "", code: 1, killed: false });
+
+	assert.equal(await call("git commit -m x"), undefined);
+	assert.equal(await call("git add a.go && git commit -m x"), undefined);
+	assert.equal(ran.includes(path.join(root, "dev", "check")), false);
+});
+
+test("a pre-commit hook that is not executable leaves the gate on", async () => {
+	const root = repo(true, 0o644);
+	const { call, ran } = setup(root, ok);
+
+	assert.equal(await call("git commit -m x"), undefined);
+	assert.deepEqual(ran.at(-1), path.join(root, "dev", "check"));
 });

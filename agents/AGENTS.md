@@ -223,7 +223,8 @@ if err := devseed.PrepareReferenceData(ctx, txStarter); err != nil {
 Provide commit message example, **wait for input**. Never push. Never start new task unprompted.
 
 A repository with an executable `dev/check` at its top level gets it run before every agent
-`git commit` (my-pi `extensions/git-gate`). It checks the staged tree; a failure blocks the
+`git commit` (my-pi `extensions/git-gate`), unless it has an executable pre-commit hook of its
+own (`core.hooksPath` included), which git runs instead. It checks the staged tree; a failure blocks the
 commit and returns its output. Stage and commit in separate commands, and never use
 `git commit -a`: files staged in the commit's own command are not staged yet when the check runs,
 so the gate refuses that command. Split one file between commits with a patch that keeps its
