@@ -229,6 +229,13 @@ commit and returns its output. Stage and commit in separate commands, and never 
 so the gate refuses that command. Split one file between commits with a patch that keeps its
 context lines (`git apply --cached`), never with `--unidiff-zero`.
 
+**Report git state only after checking it in the same turn.** Before writing that a commit,
+branch, or repository is pushed, unpushed, ahead, behind, merged, or clean, run
+`git fetch origin` and then `git status -sb` (or `git branch -r --contains <sha>`) in that
+repository, and quote the result. The user, a watcher, or another session may have pushed since
+the last check, so a state remembered from earlier in the session is not a fact. When the fetch
+fails, state the failure and give no push state at all; never fill it in from memory.
+
 ### Multi-repo changes
 
 Before researching or reasoning about code in a multi-repo task, **MUST** fetch/pull the latest
