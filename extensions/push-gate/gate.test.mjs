@@ -113,6 +113,22 @@ test("contentFingerprint ignores gate outputs and ignored files, and leaves the 
 	);
 });
 
+test("contentFingerprint works when the repo gitignores a gate output", async (t) => {
+	const { root, git } = tempRepo(t);
+	writeFileSync(join(root, ".gitignore"), "ignored/\n.metrics/\n");
+	git("commit", "-qam", "ignore metrics");
+	const before = await contentFingerprint(root);
+
+	mkdirSync(join(root, ".metrics"));
+	writeFileSync(join(root, ".metrics", "dry.edn"), "{}");
+	mkdirSync(join(root, "target", "coverage"), { recursive: true });
+	writeFileSync(join(root, "target", "coverage", "lcov.info"), "x");
+	assert.equal(await contentFingerprint(root), before, "ignored and unignored gate outputs both left out");
+
+	writeFileSync(join(root, "new.go"), "package main\n");
+	assert.notEqual(await contentFingerprint(root), before, "other new files still count");
+});
+
 test("hasSonar reads sonar-project.properties and workflow files", async (t) => {
 	const { root } = tempRepo(t);
 	assert.equal(await hasSonar(root), false);

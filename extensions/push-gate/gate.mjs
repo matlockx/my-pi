@@ -188,7 +188,11 @@ export async function contentFingerprint(root) {
 	try {
 		const env = { GIT_INDEX_FILE: join(dir, "index") };
 		await git(root, ["read-tree", "HEAD"], env).catch(() => git(root, ["read-tree", "--empty"], env));
-		const excludes = GATE_OUTPUTS.map((path) => `:(exclude)${path}`);
+		// DEV-NOTE: git add exits non-zero when an exclude pathspec names an ignored path
+		// (git 2.56). Ignored paths are never added, so only unignored outputs need excluding;
+		// check-ignore exits 1 when none is ignored.
+		const ignored = (await git(root, ["check-ignore", "--", ...GATE_OUTPUTS]).catch(() => "")).split("\n");
+		const excludes = GATE_OUTPUTS.filter((path) => !ignored.includes(path)).map((path) => `:(exclude)${path}`);
 		await git(root, ["add", "-A", "--", ".", ...excludes], env);
 		return await git(root, ["write-tree"], env);
 	} finally {
