@@ -56,4 +56,31 @@ assert.ok(checkToolCall("bash", { command: "rg sig= ~/.config/jflow" }));
 assert.ok(checkToolCall("bash", { command: "cat ~/.config/jflow/*.yaml" }));
 assert.ok(checkToolCall("grep", { path: "$HOME/.config/jflow/" }));
 
+// keychain reads that print the secret
+for (const command of [
+	'security find-generic-password -s jira-mcp -a "$e" -w 2>/dev/null',
+	"security find-internet-password -gs github.com",
+	"security dump-keychain -d login.keychain",
+]) {
+	assert.ok(checkToolCall("bash", { command }), `should block ${command}`);
+}
+assert.ok(
+	checkToolCall("eval", {
+		code: 'subprocess.run(["security", "find-generic-password", "-s", "x", "-w"])',
+	}),
+);
+// continued lines and multi-line argv lists still name -w
+assert.ok(checkToolCall("bash", { command: "security find-generic-password -s x \\\n  -w" }));
+assert.ok(
+	checkToolCall("eval", {
+		code: 'subprocess.run([\n  "security",\n  "find-generic-password",\n  "-s", "x",\n  "-w",\n])',
+	}),
+);
+// metadata only: no secret printed
+assert.equal(
+	checkToolCall("bash", { command: "security find-generic-password -s jira-mcp" }),
+	undefined,
+);
+assert.equal(checkToolCall("bash", { command: "security dump-keychain" }), undefined);
+
 console.log("fileguard: all checks passed");

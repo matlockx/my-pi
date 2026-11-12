@@ -87,6 +87,8 @@ export const RULES: Rule[] = [
 		regex: /\b(?:sq0atp-|sq0csp-|EAAA)[0-9A-Za-z\-_]{22,}\b/g,
 	},
 	{ name: "doppler-token", regex: /\bdp\.pt\.[0-9A-Za-z]{43}\b/g },
+	// Atlassian API tokens; lower bound also catches truncated values.
+	{ name: "atlassian-api-token", regex: /\bATATT3[0-9A-Za-z_\-=]{20,}/g },
 
 	// --- JWT ---
 	{

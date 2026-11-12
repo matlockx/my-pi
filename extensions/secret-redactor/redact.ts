@@ -195,6 +195,10 @@ if (process.argv[1]?.endsWith("redact.ts")) {
 		"gh pat",
 	);
 	assert(redactString(`sk-ant-${"a".repeat(24)}`).count === 1, "anthropic");
+	assert(
+		redactString(`t = "ATATT3${"x".repeat(122)}"`).text === 't = "[REDACTED:atlassian-api-token]"',
+		"atlassian",
+	);
 
 	// assignment-style: only the value group replaced, key name kept
 	const a = redactString('password = "hunter2hunter2hunter2"');

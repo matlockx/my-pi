@@ -38,6 +38,17 @@ export function secretPathsInCommand(command: string): string[] {
 	return (command.match(/[\w./~@-]+/g) ?? []).filter(isSecretFile);
 }
 
+// Keychain commands that print a stored value. The find-generic-password and
+// find-internet-password commands print it with -w or -g, dump-keychain with -d.
+// The separator class also covers argv lists in eval code
+// (`"security", "find-generic-password", "-w"`).
+const KEYCHAIN_READ =
+	/\bsecurity\b\W+(?:find-(?:generic|internet)-password\b[^\n;&|]*?[\s"'`,]-[A-Za-z]*[wg][A-Za-z]*\b|dump-keychain\b[^\n;&|]*?[\s"'`,]-[A-Za-z]*d[A-Za-z]*\b)/;
+
+const KEYCHAIN_REASON =
+	"Blocked: this command prints a keychain secret into the tool trace, which is shown and logged unredacted. " +
+	"Do not load secrets into the agent shell. Ask the user to run the command in their own terminal.";
+
 const REASON = (what: string) =>
 	`Blocked: ${what} is a secret-bearing file. Do not read it. ` +
 	`Ask the user for the specific value, or read a .example/.template variant. ` +
@@ -54,6 +65,10 @@ export function checkToolCall(
 	// eval code is scanned like a shell command: open("~/.config/...") reads too.
 	if (toolName === "bash" || toolName === "eval") {
 		const text = String(input.command ?? input.code ?? "");
+		// DEV-NOTE: lines joined first so a `\`-continued shell line or a multi-line argv list in
+		// eval code cannot split the command from its -w; a newline-separated later command
+		// may then match too, which errs on the side of blocking.
+		if (KEYCHAIN_READ.test(text.replace(/\\?\n/g, " "))) return KEYCHAIN_REASON;
 		const hits = secretPathsInCommand(text);
 		return hits.length ? REASON(hits[0]) : undefined;
 	}
