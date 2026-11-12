@@ -1,17 +1,16 @@
-# Jira MCP (sooperset/mcp-atlassian, Jira only) for omp sessions. Started from a host shell,
-# never by the agent: the omp side is only the `jira` http entry in my-pi/mcp.json.
+# Jira MCP (sooperset/mcp-atlassian, Jira only) behind the MCP guard, for omp sessions. Started
+# from a host shell, never by the agent: the omp side is only the `jira` http entry in my-pi/mcp.json.
+# my-pi/mcp/jira/guard.mjs holds the API token in memory and starts mcp-atlassian on 18084.
 #
 # Loaded through my-pi/fish/conf.d/my-pi.fish.
-# Requires: brew install uv; acli logged in (site and e-mail are taken from
+# Requires: brew install uv; node >= 24.2; acli logged in (site and e-mail are taken from
 # `acli jira auth status`); a Jira API token (https://id.atlassian.com/manage-profile/security/api-tokens)
 # in the login keychain:
 #   security add-generic-password -U -s jira-mcp -a <e-mail> -w
-function jiramcp --description 'Jira MCP (mcp-atlassian, read-write) on 127.0.0.1:8084'
+function jiramcp --description 'Jira MCP (mcp-atlassian behind the MCP guard) on 127.0.0.1:8084'
     set -l port 8084
     set -l logfile ~/.local/state/jiramcp.log
-    set -l workdir ~/.local/state/jiramcp
-    # DEV-NOTE: pinned; uvx would otherwise run whatever PyPI serves at start time.
-    set -l package mcp-atlassian@0.24.2
+    set -l guard (path resolve (path dirname (path resolve (functions --details jiramcp)))/../../mcp/jira/guard.mjs)
     set -l listening (lsof -t -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null)
 
     switch "$argv[1]"
@@ -31,26 +30,16 @@ function jiramcp --description 'Jira MCP (mcp-atlassian, read-write) on 127.0.0.
                 echo "jiramcp: acli is not logged in (acli jira auth login); not started" >&2
                 return 1
             end
-            set -l token (security find-generic-password -s jira-mcp -a $email -w 2>/dev/null)
-            if test -z "$token"
+            # DEV-NOTE: presence check only; guard.mjs reads the token itself, so it is in no
+            # shell variable or process environment.
+            if not security find-generic-password -s jira-mcp -a $email >/dev/null 2>&1
                 echo "jiramcp: no Jira API token in the keychain; add it with: security add-generic-password -U -s jira-mcp -a $email -w" >&2
                 return 1
             end
-            mkdir -p (path dirname $logfile) $workdir/files
+            mkdir -p (path dirname $logfile)
             # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
             # process with a tty stdin is stopped by SIGTTIN.
-            # DEV-NOTE: --directory: mcp-atlassian loads ./.env, so it must not start in an
-            # arbitrary project directory. --host: the default is 0.0.0.0.
-            # MCP_ATLASSIAN_FILES_DIR: the only directory upload tools may read from.
-            # ALLOW_GLOBAL_CRED_FALLBACK: omp sends no Authorization header; without it every
-            # request fails with "Authentication required". Any local caller then uses the
-            # configured Jira account, the same exposure as ghmcp and jflow mcp.
-            # shortcut: the token is in the server's environment (readable by same-user
-            # processes outside the sandbox); mcp-atlassian takes Cloud API tokens no other way.
-            JIRA_URL=https://$site JIRA_USERNAME=$email JIRA_API_TOKEN=$token \
-                MCP_ATLASSIAN_FILES_DIR=$workdir/files ALLOW_GLOBAL_CRED_FALLBACK=true \
-                nohup uvx --directory $workdir $package --transport streamable-http --stateless \
-                --host 127.0.0.1 --port $port </dev/null >$logfile 2>&1 &
+            nohup node $guard </dev/null >$logfile 2>&1 &
             set -l pid $last_pid
             disown
             # First start downloads the package, so allow longer than ghmcp.
@@ -73,7 +62,7 @@ function jiramcp --description 'Jira MCP (mcp-atlassian, read-write) on 127.0.0.
                 echo "jiramcp: not running"
                 return 0
             end
-            # uvx exits once its python child does.
+            # The guard stops mcp-atlassian on SIGTERM.
             kill -TERM $listening
             echo "jiramcp: stopped (pid $listening)"
         case status

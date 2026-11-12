@@ -1,9 +1,10 @@
 #!/usr/bin/env fish
 # Starts the my-pi host proxies: GitHub MCP (ghmcp, 127.0.0.1:8082), Go
 # modules (gomodproxy, 127.0.0.1:8083), Jira MCP (jiramcp, 127.0.0.1:8084)
-# and, when jflow is on PATH, the jflow MCP server (jflow mcp --http,
-# 127.0.0.1:8765, the JFLOW_MCP_URL of the jflow-mcp extension). A server
-# already listening is left alone.
+# and, when jflow is on PATH, the jflow MCP server (127.0.0.1:8765, the
+# JFLOW_MCP_URL of the jflow-mcp extension). GitHub, Jira and jflow run behind
+# the MCP guard (my-pi/mcp/guard), their real servers on 18082, 18084 and
+# 18765. A server already listening is left alone.
 #
 #   my-pi-start            start what is not running
 #   my-pi-start restart    stop every server, then start them all
@@ -46,10 +47,12 @@ function __my_pi_jflow_start --argument-names port logfile
         echo "jflow mcp: already running on http://127.0.0.1:$port/ (pid $listening, log: $logfile)"
         return 0
     end
+    # The repo is found through the ghmcp function, since this script runs from ~/bin.
+    set -l guard (path resolve (path dirname (path resolve (functions --details ghmcp)))/../../mcp/jflow/guard.mjs)
     mkdir -p (path dirname $logfile)
     # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
     # process with a tty stdin is stopped by SIGTTIN.
-    nohup jflow mcp --http 127.0.0.1:$port </dev/null >$logfile 2>&1 &
+    nohup node $guard </dev/null >$logfile 2>&1 &
     set -l pid $last_pid
     disown
     for i in (seq 10)
@@ -82,10 +85,14 @@ switch "$argv[1]"
         jiramcp stop
         command -q jflow; and __my_pi_jflow_stop $jflow_port
         set -l busy 0
+        # Upstream ports too: a guard frees its own port before its server child exits.
         __my_pi_wait_free 8082 ghmcp; or set busy 1
+        __my_pi_wait_free 18082 github-mcp-server; or set busy 1
         __my_pi_wait_free 8083 gomodproxy; or set busy 1
         __my_pi_wait_free 8084 jiramcp; or set busy 1
+        __my_pi_wait_free 18084 mcp-atlassian; or set busy 1
         __my_pi_wait_free $jflow_port "jflow mcp"; or set busy 1
+        __my_pi_wait_free 18765 "jflow mcp (upstream)"; or set busy 1
         test $busy -eq 0; or exit 1
     case '*'
         echo "usage: my-pi-start [restart]" >&2

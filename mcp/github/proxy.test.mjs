@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
 
-import { ASSET_MAX_BYTES, ASSET_MAX_REDIRECTS, allowedHost, assetUrl, createProxy } from "./proxy.mjs";
+import { ASSET_MAX_BYTES, ASSET_MAX_REDIRECTS, assetUrl, createProxy } from "./proxy.mjs";
 
 const TOKEN = "test-token-value";
 
@@ -44,15 +44,6 @@ function post(port, headers = {}) {
 		req.end('{"jsonrpc":"2.0","id":1,"method":"ping"}');
 	});
 }
-
-test("allowedHost accepts only loopback names on the bound port", () => {
-	assert.equal(allowedHost("127.0.0.1:8082", 8082), true);
-	assert.equal(allowedHost("localhost:8082", 8082), true);
-	assert.equal(allowedHost("evil.example:8082", 8082), false);
-	assert.equal(allowedHost("127.0.0.1:9999", 8082), false);
-	assert.equal(allowedHost("127.0.0.1", 8082), false);
-	assert.equal(allowedHost(undefined, 8082), false);
-});
 
 test("proxy replaces client Authorization with the token and streams the response", async (t) => {
 	const up = await startUpstream();
