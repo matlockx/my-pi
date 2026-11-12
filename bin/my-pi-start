@@ -17,6 +17,12 @@
 # Copied to ~/bin by my-pi/setup.fish. ghmcp, gomodproxy and jiramcp come from
 # the ~/.config/fish/conf.d/my-pi.fish link that setup.fish creates.
 
+# DEV-NOTE: a script runs without job control, so every server would share this script's
+# process group: the terminal's foreground group while it runs (Ctrl-C and tty access hit
+# all of them), and `ghmcp stop` (kill -- -pgid) would take down every other server too.
+# Full job control puts each background job in its own group.
+status job-control full
+
 set -l jflow_port 8765
 set -l jflow_log ~/.local/state/jflowmcp.log
 
