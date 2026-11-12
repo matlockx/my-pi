@@ -99,7 +99,7 @@ end
 if command -q acli
     set -l email (acli jira auth status 2>/dev/null | string match -rg '^\s*Email:\s*(\S+)')
     if test -n "$email"; and not security find-generic-password -s jira-mcp -a $email >/dev/null 2>&1
-        echo "note: no Jira API token in the keychain, so jiramcp will not start; create one at https://id.atlassian.com/manage-profile/security/api-tokens, then: security add-generic-password -U -s jira-mcp -a $email -w"
+        echo "note: no Jira API token in the keychain, so jiramcp will not start; create one at https://id.atlassian.com/manage-profile/security/api-tokens, then: read -s -P 'Jira API token: ' t; and security add-generic-password -U -s jira-mcp -a $email -w \$t; set -e t"
     end
 else
     echo "note: acli not on PATH; jiramcp needs it for the Jira site and e-mail (https://developer.atlassian.com/cloud/acli/guides/install-macos/)"

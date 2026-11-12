@@ -5,8 +5,9 @@
 # Loaded through my-pi/fish/conf.d/my-pi.fish.
 # Requires: brew install uv; node >= 24.2; acli logged in (site and e-mail are taken from
 # `acli jira auth status`); a Jira API token (https://id.atlassian.com/manage-profile/security/api-tokens)
-# in the login keychain:
-#   security add-generic-password -U -s jira-mcp -a <e-mail> -w
+# in the login keychain. Not with a bare `-w`: its prompt keeps only the first 128 characters,
+# shorter than an Atlassian API token, and Jira then answers 401:
+#   read -s -P 'Jira API token: ' t; and security add-generic-password -U -s jira-mcp -a <e-mail> -w $t; set -e t
 function jiramcp --description 'Jira MCP (mcp-atlassian behind the MCP guard) on 127.0.0.1:8084'
     set -l port 8084
     set -l logfile ~/.local/state/jiramcp.log
@@ -33,7 +34,7 @@ function jiramcp --description 'Jira MCP (mcp-atlassian behind the MCP guard) on
             # DEV-NOTE: presence check only; guard.mjs reads the token itself, so it is in no
             # shell variable or process environment.
             if not security find-generic-password -s jira-mcp -a $email >/dev/null 2>&1
-                echo "jiramcp: no Jira API token in the keychain; add it with: security add-generic-password -U -s jira-mcp -a $email -w" >&2
+                echo "jiramcp: no Jira API token in the keychain; add it with: read -s -P 'Jira API token: ' t; and security add-generic-password -U -s jira-mcp -a $email -w \$t; set -e t" >&2
                 return 1
             end
             mkdir -p (path dirname $logfile)

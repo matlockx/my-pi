@@ -65,7 +65,9 @@ async function main() {
 	}
 	const token = output("security", ["find-generic-password", "-s", "jira-mcp", "-a", email, "-w"]);
 	if (!token) {
-		console.error(`jiramcp: no Jira API token in the keychain: security add-generic-password -U -s jira-mcp -a ${email} -w`);
+		console.error(
+			`jiramcp: no Jira API token in the keychain: read -s -P 'Jira API token: ' t; and security add-generic-password -U -s jira-mcp -a ${email} -w $t; set -e t`,
+		);
 		process.exit(1);
 	}
 	const project = jflowProject();
