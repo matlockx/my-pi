@@ -38,20 +38,27 @@ function output(command, args) {
 	}
 }
 
-/** Project key from jflow's config, or "" when absent. */
+/** Site and e-mail from `acli jira auth status` output; each undefined when absent. */
+export function parseAcliStatus(text) {
+	return { site: text.match(/^\s*Site:\s*(\S+)/m)?.[1], email: text.match(/^\s*Email:\s*(\S+)/m)?.[1] };
+}
+
+/** project_key from the text of jflow's config.yaml, or "" when absent. */
+export function projectKey(configText) {
+	return configText.match(/^project_key:\s*["']?([A-Z][A-Z0-9]+)["']?\s*$/m)?.[1] ?? "";
+}
+
+/** Project key from ~/.config/jflow/config.yaml, or "" when the file is missing. */
 function jflowProject() {
 	try {
-		const config = readFileSync(join(os.homedir(), ".config/jflow/config.yaml"), "utf8");
-		return config.match(/^project_key:\s*["']?([A-Z][A-Z0-9]+)["']?\s*$/m)?.[1] ?? "";
+		return projectKey(readFileSync(join(os.homedir(), ".config/jflow/config.yaml"), "utf8"));
 	} catch {
 		return "";
 	}
 }
 
 async function main() {
-	const auth = output("acli", ["jira", "auth", "status"]);
-	const site = auth.match(/^\s*Site:\s*(\S+)/m)?.[1];
-	const email = auth.match(/^\s*Email:\s*(\S+)/m)?.[1];
+	const { site, email } = parseAcliStatus(output("acli", ["jira", "auth", "status"]));
 	if (!site || !email) {
 		console.error("jiramcp: acli is not logged in (acli jira auth login)");
 		process.exit(1);

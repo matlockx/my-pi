@@ -101,6 +101,88 @@ function denial(parsed, reasons) {
 	return Array.isArray(parsed) ? parsed.filter((m) => m?.id !== undefined).map(answer) : answer(parsed);
 }
 
+/** Answers res with a plain-text status. */
+function reply(res, status, text) {
+	res.writeHead(status, { "content-type": "text/plain" }).end(`${text}\n`);
+}
+
+/**
+ * Sends req to the server of g with g's Authorization and streams the answer
+ * to res. body replaces the request stream when the guard has read it.
+ */
+function forward(g, req, res, body) {
+	const headers = without(req.headers, DROP_REQUEST);
+	headers.host = `${LISTEN_HOST}:${g.upstreamPort}`;
+	headers.authorization = g.authorization;
+	if (body) headers["content-length"] = String(body.length);
+	const upstream = http.request(
+		{ host: LISTEN_HOST, port: g.upstreamPort, method: req.method, path: req.url, headers },
+		(upRes) => {
+			res.writeHead(upRes.statusCode ?? 502, without(upRes.headers, DROP_RESPONSE));
+			upRes.pipe(res);
+		},
+	);
+	upstream.on("error", (err) => {
+		console.error(`mcpguard ${g.server}: upstream ${req.method} ${req.url}: ${err.message}`);
+		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+		res.end();
+	});
+	// A client that disconnects mid-stream (SSE) releases the upstream request too.
+	res.on("close", () => upstream.destroy());
+	if (body) upstream.end(body);
+	else req.pipe(upstream);
+}
+
+/** Policy verdict for each tools/call in parsed (one message or a batch). */
+function verdictsOf(g, parsed) {
+	return (Array.isArray(parsed) ? parsed : [parsed])
+		.filter((m) => m?.method === "tools/call")
+		.map((m) => {
+			const tool = String(m.params?.name ?? "");
+			const args = m.params?.arguments;
+			return { tool, args, ...g.classifyCall(g.server, tool, args, g.policy) };
+		});
+}
+
+/** Reads and classifies a POST, asks the user when needed, then forwards it or answers with a denial. */
+async function inspect(g, req, res) {
+	const body = await readBody(req, MAX_BODY_BYTES);
+	if (body === null) return reply(res, 413, "request body too large");
+	let parsed;
+	try {
+		parsed = JSON.parse(body.toString("utf8"));
+	} catch {
+		return reply(res, 400, "request body is not JSON");
+	}
+	const verdicts = verdictsOf(g, parsed);
+	const flagged = verdicts.filter((v) => v.decision === "confirm");
+	const approved = flagged.length === 0 || (await g.confirm(dialogText(g.server, flagged)));
+	const outcome = approved ? "approved" : "denied";
+	for (const { tool, decision, reasons } of verdicts) {
+		g.log({ server: g.server, tool, decision: decision === "allow" ? "allow" : outcome, reasons });
+	}
+	if (approved) return forward(g, req, res, body);
+	const answer = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons)));
+	res.writeHead(200, { "content-type": "application/json" }).end(answer);
+}
+
+/** Routes one request: Host check, extra routes, plain forwarding for non-POST, inspection for POST. */
+function route(g, port, req, res) {
+	if (!allowedHost(req.headers.host, port)) {
+		reply(res, 403, "forbidden host");
+		req.resume();
+		return;
+	}
+	if (g.extra(req, res)) return;
+	if (req.method !== "POST") return forward(g, req, res);
+	inspect(g, req, res).catch((err) => {
+		// Fails closed: nothing is forwarded after an error in the inspection.
+		console.error(`mcpguard ${g.server}: ${err.message}`);
+		if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
+		res.end();
+	});
+}
+
 /**
  * Creates the guard server; it is not listening yet, and the Host check uses
  * the port it is bound to. server names the policy ("github", "jira", "jflow");
@@ -120,80 +202,8 @@ export function createGuard({
 	classifyCall = classify,
 	log = auditLog,
 }) {
-	const forward = (req, res, body) => {
-		const headers = without(req.headers, DROP_REQUEST);
-		headers.host = `${LISTEN_HOST}:${upstreamPort}`;
-		headers.authorization = authorization;
-		if (body) headers["content-length"] = String(body.length);
-		const upstream = http.request(
-			{ host: LISTEN_HOST, port: upstreamPort, method: req.method, path: req.url, headers },
-			(upRes) => {
-				res.writeHead(upRes.statusCode ?? 502, without(upRes.headers, DROP_RESPONSE));
-				upRes.pipe(res);
-			},
-		);
-		upstream.on("error", (err) => {
-			console.error(`mcpguard ${server}: upstream ${req.method} ${req.url}: ${err.message}`);
-			if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
-			res.end();
-		});
-		// A client that disconnects mid-stream (SSE) releases the upstream request too.
-		res.on("close", () => upstream.destroy());
-		if (body) upstream.end(body);
-		else req.pipe(upstream);
-	};
-
-	const inspect = async (req, res) => {
-		const body = await readBody(req, MAX_BODY_BYTES);
-		if (body === null) {
-			res.writeHead(413, { "content-type": "text/plain" }).end("request body too large\n");
-			return;
-		}
-		let parsed;
-		try {
-			parsed = JSON.parse(body.toString("utf8"));
-		} catch {
-			res.writeHead(400, { "content-type": "text/plain" }).end("request body is not JSON\n");
-			return;
-		}
-		const verdicts = (Array.isArray(parsed) ? parsed : [parsed])
-			.filter((m) => m?.method === "tools/call")
-			.map((m) => {
-				const tool = String(m.params?.name ?? "");
-				const args = m.params?.arguments;
-				return { tool, args, ...classifyCall(server, tool, args, policy) };
-			});
-		const flagged = verdicts.filter((v) => v.decision === "confirm");
-		const approved = flagged.length === 0 || (await confirm(dialogText(server, flagged)));
-		for (const { tool, decision, reasons } of verdicts) {
-			log({ server, tool, decision: decision === "allow" ? "allow" : approved ? "approved" : "denied", reasons });
-		}
-		if (!approved) {
-			const answer = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons)));
-			res.writeHead(200, { "content-type": "application/json" }).end(answer);
-			return;
-		}
-		forward(req, res, body);
-	};
-
-	const httpServer = http.createServer((req, res) => {
-		if (!allowedHost(req.headers.host, httpServer.address().port)) {
-			res.writeHead(403, { "content-type": "text/plain" }).end("forbidden host\n");
-			req.resume();
-			return;
-		}
-		if (extra(req, res)) return;
-		if (req.method !== "POST") {
-			forward(req, res);
-			return;
-		}
-		inspect(req, res).catch((err) => {
-			// Fails closed: nothing is forwarded after an error in the inspection.
-			console.error(`mcpguard ${server}: ${err.message}`);
-			if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
-			res.end();
-		});
-	});
+	const g = { server, upstreamPort, authorization, policy, extra, confirm, classifyCall, log };
+	const httpServer = http.createServer((req, res) => route(g, httpServer.address().port, req, res));
 	return httpServer;
 }
 

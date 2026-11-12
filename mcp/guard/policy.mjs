@@ -96,6 +96,36 @@ function jiraProjects(args) {
 		.filter((project) => /^[A-Z][A-Z0-9]+$/.test(project));
 }
 
+/** Findings about what a GitHub call targets: default-branch file writes and foreign owners. */
+function githubTargetReasons(tool, input, write, owners) {
+	const reasons = [];
+	if (FILE_WRITES.has(tool) && (!input.branch || DEFAULT_BRANCHES.has(input.branch)))
+		reasons.push(`writes files to the default branch (${input.branch || "default"})`);
+	if (write && typeof input.owner === "string" && !owners.includes(input.owner.toLowerCase()))
+		reasons.push(`repository owner ${input.owner} is not in the allowlist`);
+	return reasons;
+}
+
+/** Finding about Jira projects outside projects that a write targets; none when projects is empty. */
+function jiraTargetReasons(input, write, projects) {
+	if (!write || projects.length === 0) return [];
+	const foreign = [...new Set(jiraProjects(input).filter((p) => !projects.includes(p)))];
+	return foreign.length > 0 ? [`Jira project ${foreign.join(", ")} is not in the allowlist`] : [];
+}
+
+/** Findings about the argument values: secrets anywhere, personal data in free-text fields. */
+function contentReasons(input, ownEmails) {
+	const reasons = [];
+	const leaves = strings(input);
+	const found = [...new Set(leaves.flatMap(({ text }) => secrets(text)))];
+	if (found.length > 0) reasons.push(`secret in the arguments (${found.join(", ")})`);
+	const personal = [
+		...new Set(leaves.filter(({ key }) => FREE_TEXT.has(key)).flatMap(({ text }) => personalData(text, ownEmails))),
+	];
+	if (personal.length > 0) reasons.push(`personal data in the arguments (${personal.join(", ")})`);
+	return reasons;
+}
+
 /**
  * Classifies one tools/call of server ("github", "jira" or "jflow").
  * owners: lower-case GitHub owners writes may target. jiraProjects: Jira project
@@ -106,22 +136,11 @@ function jiraProjects(args) {
 export function classify(server, tool, args, { owners = [], jiraProjects: projects = [], ownEmails = [] } = {}) {
 	const input = args && typeof args === "object" ? args : {};
 	const write = !READ.test(tool);
-	const reasons = [];
-	if (DESTRUCTIVE[server]?.has(tool)) reasons.push(`destructive tool ${tool}`);
-	if (server === "github" && FILE_WRITES.has(tool) && (!input.branch || DEFAULT_BRANCHES.has(input.branch)))
-		reasons.push(`writes files to the default branch (${input.branch || "default"})`);
-	if (server === "github" && write && typeof input.owner === "string" && !owners.includes(input.owner.toLowerCase()))
-		reasons.push(`repository owner ${input.owner} is not in the allowlist`);
-	if (server === "jira" && write && projects.length > 0) {
-		const foreign = [...new Set(jiraProjects(input).filter((p) => !projects.includes(p)))];
-		if (foreign.length > 0) reasons.push(`Jira project ${foreign.join(", ")} is not in the allowlist`);
-	}
-	const leaves = strings(input);
-	const found = [...new Set(leaves.flatMap(({ text }) => secrets(text)))];
-	if (found.length > 0) reasons.push(`secret in the arguments (${found.join(", ")})`);
-	const personal = [
-		...new Set(leaves.filter(({ key }) => FREE_TEXT.has(key)).flatMap(({ text }) => personalData(text, ownEmails))),
+	const reasons = [
+		...(DESTRUCTIVE[server]?.has(tool) ? [`destructive tool ${tool}`] : []),
+		...(server === "github" ? githubTargetReasons(tool, input, write, owners) : []),
+		...(server === "jira" ? jiraTargetReasons(input, write, projects) : []),
+		...contentReasons(input, ownEmails),
 	];
-	if (personal.length > 0) reasons.push(`personal data in the arguments (${personal.join(", ")})`);
 	return { decision: reasons.length > 0 ? "confirm" : "allow", reasons };
 }
