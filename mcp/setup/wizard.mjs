@@ -4,8 +4,9 @@
  *
  * Asks for each MCP server whether it is wanted and creates what that server
  * needs: GitHub (github-mcp-server), Jira (acli login, API token in the login
- * keychain), jflow (binary on PATH), and the tier map
- * ~/.config/mcpguard/tiers.json for the Kubernetes and AWS servers. Unwanted
+ * keychain), jflow (binary on PATH), Kubernetes (kubernetes-mcp-server), AWS
+ * (uvx, aws) and vcluster (vcluster, kubectl), and the tier map
+ * ~/.config/mcpguard/tiers.json for the Kubernetes, AWS and vcluster servers. Unwanted
  * servers are listed in disabledServers of ~/.omp/agent/mcp.json: omp does not
  * connect to them, my-pi-start does not start them, and the omp setup check does
  * not report them.
@@ -22,13 +23,11 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 import readline from "node:readline/promises";
 
-export const TIERS = ["dev", "ppd", "prd"];
-/** Answer for a context or profile the agent must not use at all; stored in the tier file's skip list. */
-export const SKIP = "skip";
+import { knownTier, loadTiers, SKIP, TIERS, TIERS_FILE } from "../guard/tiers.mjs";
+
 const SKIP_WORDS = new Set([SKIP, "s", "none", "-", "x"]);
 const HOME = os.homedir();
 const USER_MCP = join(HOME, ".omp/agent/mcp.json");
-const TIERS_FILE = join(HOME, ".config/mcpguard/tiers.json");
 const KUBE_DIR = join(HOME, ".kube/configs");
 // Written by the vcluster MCP; its contexts get their tier from the vcluster_ name prefix.
 const VCLUSTER_KUBECONFIG = "vclusters.yaml";
@@ -43,11 +42,6 @@ export function guessTier(name) {
 	if (/ppd|preprod|stag|uat/.test(n)) return "ppd";
 	if (/dev|test|sandbox/.test(n)) return "dev";
 	return "prd";
-}
-
-/** Tier or SKIP named by name in section ({ dev, ppd, prd, skip } name lists of a tiers file); undefined when not listed. */
-export function knownTier(section, name) {
-	return [...TIERS, SKIP].find((tier) => Array.isArray(section?.[tier]) && section[tier].includes(name));
 }
 
 /** Tier or SKIP for a typed answer (case-insensitive; skip, s, none, - and x mean SKIP); def for an empty answer; undefined otherwise. */
@@ -199,6 +193,28 @@ async function jflowStep(rl, enabled) {
 	return true;
 }
 
+/** Asks to use server; offers `brew install formula` when command is missing. */
+async function brewToolStep(rl, enabled, question, command, formula) {
+	if (!(await confirm(rl, question, enabled))) return false;
+	if (!onPath(command) && (await confirm(rl, `  ${command} is missing. brew install ${formula}?`, true))) interactive("brew", ["install", formula]);
+	return true;
+}
+
+const kubeStep = (rl, enabled) =>
+	brewToolStep(rl, enabled, "Use the Kubernetes MCP (kube, 127.0.0.1:8085)?", "kubernetes-mcp-server", "kubernetes-mcp-server");
+
+async function awsStep(rl, enabled) {
+	if (!(await confirm(rl, "Use the AWS MCP (aws, 127.0.0.1:8086)?", enabled))) return false;
+	for (const command of ["uvx", "aws"]) if (!onPath(command)) console.log(`  todo: ${command} is missing (brew install ${command === "uvx" ? "uv" : "awscli"})`);
+	return true;
+}
+
+async function vclusterStep(rl, enabled) {
+	if (!(await brewToolStep(rl, enabled, "Use the vcluster MCP (vcluster, 127.0.0.1:8087)?", "vcluster", "loft-sh/tap/vcluster"))) return false;
+	if (!onPath("kubectl")) console.log("  todo: kubectl is missing (brew install kubectl)");
+	return true;
+}
+
 /** Contexts of the kubeconfig files in dir (vclusters.yaml excluded), first file wins per name as with KUBECONFIG. */
 function kubeContexts(dir) {
 	let files;
@@ -238,8 +254,8 @@ async function askTiers(rl, names, section, label = () => "") {
 }
 
 async function tiersStep(rl) {
-	if (!(await confirm(rl, `Write the tier map for the Kubernetes and AWS MCP servers (${TIERS_FILE})?`, true))) return;
-	const existing = readJson(TIERS_FILE, {});
+	if (!(await confirm(rl, `Write the tier map for the Kubernetes, AWS and vcluster MCP servers (${TIERS_FILE})?`, true))) return;
+	const existing = loadTiers(TIERS_FILE);
 	console.log(
 		`  Tiers: dev, ppd or prd; ${SKIP} means the agent cannot use it. Anything not listed counts as prd; vcluster_* contexts are the vcluster tier.`,
 	);
@@ -304,14 +320,15 @@ async function main() {
 		let next = mcp;
 		// DEV-NOTE: jflow is no omp MCP server (the jflow-mcp extension connects to it), so omp
 		// ignores that name; it sits in disabledServers so my-pi-start has one list to read.
-		const steps = { github: githubStep, jira: jiraStep, jflow: jflowStep };
+		const steps = { github: githubStep, jira: jiraStep, jflow: jflowStep, kube: kubeStep, aws: awsStep, vcluster: vclusterStep };
 		for (const [server, step] of Object.entries(steps)) next = withDisabled(next, server, !(await step(rl, !disabled.has(server))));
 		if (JSON.stringify(next) !== JSON.stringify(mcp)) {
 			// Mode 600: the file can hold other servers' credentials.
 			writeJson(USER_MCP, next, 0o600);
 			console.log(`saved disabledServers (${next.disabledServers?.join(", ") ?? "none"}) in ${USER_MCP}`);
 		}
-		await tiersStep(rl);
+		// The tier map serves the kube and aws policies and names the vcluster host.
+		if (["kube", "aws", "vcluster"].some((s) => !next.disabledServers?.includes(s))) await tiersStep(rl);
 	} finally {
 		finished = true;
 		rl.close();

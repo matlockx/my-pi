@@ -4,7 +4,9 @@
 # and, when jflow is on PATH, the jflow MCP server (127.0.0.1:8765, the
 # JFLOW_MCP_URL of the jflow-mcp extension). GitHub, Jira and jflow run behind
 # the MCP guard (my-pi/mcp/guard), their real servers on 18082, 18084 and
-# 18765. A server already listening is left alone. Servers listed in
+# 18765. The Kubernetes (kubemcp, 127.0.0.1:8085), AWS (awsmcp, 8086) and
+# vcluster (vclustermcp, 8087) MCP servers run as stdio children of their
+# guard and have no port of their own. A server already listening is left alone. Servers listed in
 # disabledServers of ~/.omp/agent/mcp.json (set by the MCP setup wizard,
 # my-pi/mcp/setup/wizard.mjs) are not started.
 #
@@ -43,40 +45,42 @@ function __my_pi_wait_free --argument-names port name
     return 1
 end
 
-function __my_pi_jflow_start --argument-names port logfile
+# Starts the guard script rel (path under my-pi/mcp) as name on port, waiting up to wait seconds.
+function __my_pi_guard_start --argument-names name port rel logfile wait
     set -l listening (__my_pi_listener $port)
     if test -n "$listening"
-        echo "jflow mcp: already running on http://127.0.0.1:$port/ (pid $listening, log: $logfile)"
+        echo "$name: already running on http://127.0.0.1:$port/ (pid $listening, log: $logfile)"
         return 0
     end
     # The repo is found through the ghmcp function, since this script runs from ~/bin.
-    set -l guard (path resolve (path dirname (path resolve (functions --details ghmcp)))/../../mcp/jflow/guard.mjs)
+    set -l guard (path resolve (path dirname (path resolve (functions --details ghmcp)))/../../mcp/$rel)
     mkdir -p (path dirname $logfile)
     # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
     # process with a tty stdin is stopped by SIGTTIN.
     nohup node $guard </dev/null >$logfile 2>&1 &
     set -l pid $last_pid
     disown
-    for i in (seq 10)
+    for i in (seq $wait)
         if test -n "$(__my_pi_listener $port)"
-            echo "jflow mcp: up on http://127.0.0.1:$port/ (pid $pid, log: $logfile)"
+            echo "$name: up on http://127.0.0.1:$port/ (pid $pid, log: $logfile)"
             return 0
         end
         kill -0 $pid 2>/dev/null; or break
         command sleep 1
     end
-    echo "jflow mcp: not listening (pid $pid); see $logfile" >&2
+    echo "$name: not listening (pid $pid); see $logfile" >&2
     return 1
 end
 
-function __my_pi_jflow_stop --argument-names port
+# Stops whatever listens on port; a guard stops its server child on SIGTERM.
+function __my_pi_port_stop --argument-names name port
     set -l listening (__my_pi_listener $port)
     if test -z "$listening"
-        echo "jflow mcp: not running"
+        echo "$name: not running"
         return 0
     end
     kill -TERM $listening
-    echo "jflow mcp: stopped (pid $listening)"
+    echo "$name: stopped (pid $listening)"
 end
 
 switch "$argv[1]"
@@ -85,7 +89,10 @@ switch "$argv[1]"
         ghmcp stop
         gomodproxy stop
         jiramcp stop
-        command -q jflow; and __my_pi_jflow_stop $jflow_port
+        command -q jflow; and __my_pi_port_stop "jflow mcp" $jflow_port
+        __my_pi_port_stop kubemcp 8085
+        __my_pi_port_stop awsmcp 8086
+        __my_pi_port_stop vclustermcp 8087
         set -l busy 0
         # Upstream ports too: a guard frees its own port before its server child exits.
         __my_pi_wait_free 8082 ghmcp; or set busy 1
@@ -95,6 +102,9 @@ switch "$argv[1]"
         __my_pi_wait_free 18084 mcp-atlassian; or set busy 1
         __my_pi_wait_free $jflow_port "jflow mcp"; or set busy 1
         __my_pi_wait_free 18765 "jflow mcp (upstream)"; or set busy 1
+        __my_pi_wait_free 8085 kubemcp; or set busy 1
+        __my_pi_wait_free 8086 awsmcp; or set busy 1
+        __my_pi_wait_free 8087 vclustermcp; or set busy 1
         test $busy -eq 0; or exit 1
     case '*'
         echo "usage: my-pi-start [restart]" >&2
@@ -120,9 +130,32 @@ end
 if contains jflow $disabled
     echo "jflow mcp: $off"
 else if command -q jflow
-    __my_pi_jflow_start $jflow_port $jflow_log; or set failed 1
+    __my_pi_guard_start "jflow mcp" $jflow_port jflow/guard.mjs $jflow_log 10; or set failed 1
 else
     echo "jflow mcp: jflow not on PATH; not started"
+end
+# Kubernetes, AWS and vcluster MCP: stdio servers behind the guard, no upstream port.
+if contains kube $disabled
+    echo "kubemcp: $off"
+else if command -q kubernetes-mcp-server
+    __my_pi_guard_start kubemcp 8085 kube/guard.mjs ~/.local/state/kubemcp.log 20; or set failed 1
+else
+    echo "kubemcp: kubernetes-mcp-server not on PATH (brew install kubernetes-mcp-server); not started"
+end
+if contains aws $disabled
+    echo "awsmcp: $off"
+else if command -q uvx
+    # First start downloads the package and its AWS CLI.
+    __my_pi_guard_start awsmcp 8086 aws/guard.mjs ~/.local/state/awsmcp.log 180; or set failed 1
+else
+    echo "awsmcp: uvx not on PATH (brew install uv); not started"
+end
+if contains vcluster $disabled
+    echo "vclustermcp: $off"
+else if command -q vcluster; and command -q kubectl
+    __my_pi_guard_start vclustermcp 8087 vcluster/guard.mjs ~/.local/state/vclustermcp.log 20; or set failed 1
+else
+    echo "vclustermcp: vcluster or kubectl not on PATH (brew install loft-sh/tap/vcluster kubectl); not started"
 end
 
 exit $failed

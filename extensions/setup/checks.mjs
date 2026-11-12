@@ -18,6 +18,12 @@ export const MIN_NODE = [24, 2];
 export const GITHUB_MCP_PORT = 8082;
 export const GO_MODULE_PROXY_PORT = 8083;
 export const JIRA_MCP_PORT = 8084;
+/** MCP servers behind the guard that run only when not in disabledServers. */
+export const GUARDED_MCP = [
+	{ name: "kube", port: 8085, label: "Kubernetes MCP" },
+	{ name: "aws", port: 8086, label: "AWS MCP" },
+	{ name: "vcluster", port: 8087, label: "vcluster MCP" },
+];
 
 /**
  * Symlinks the repo owns. `optional` links are skipped when their parent
@@ -184,6 +190,12 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	actions.push(
 		...proxyActions(proxyUp || disabled.has("github"), goProxyUp || !usesGoModuleProxy(goProxy), jiraUp || disabled.has("jira")),
 	);
+	for (const { name, port, label } of GUARDED_MCP) {
+		if (disabled.has(name) || (await portOpen(port))) continue;
+		actions.push(
+			`${label} not listening on 127.0.0.1:${port}: run my-pi-start in a host terminal, then /mcp reconnect ${name} (or turn it off in the setup wizard)`,
+		);
+	}
 	return { fixed, actions };
 }
 

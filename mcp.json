@@ -10,6 +10,21 @@
       "type": "http",
       "url": "http://127.0.0.1:8084/mcp",
       "timeout": 120000
+    },
+    "kube": {
+      "type": "http",
+      "url": "http://127.0.0.1:8085/mcp",
+      "timeout": 120000
+    },
+    "aws": {
+      "type": "http",
+      "url": "http://127.0.0.1:8086/mcp",
+      "timeout": 120000
+    },
+    "vcluster": {
+      "type": "http",
+      "url": "http://127.0.0.1:8087/mcp",
+      "timeout": 120000
     }
   }
 }

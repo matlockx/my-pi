@@ -205,3 +205,36 @@ test("a foreign Host header is rejected without contacting the server", async (t
 	assert.equal(res.status, 403);
 	assert.equal(up.seen.length, 0);
 });
+
+test("a deny verdict refuses the whole request without a dialog and forwards nothing", async (t) => {
+	const up = await startUpstream(t);
+	const prompts = [];
+	const logged = [];
+	const guard = createGuard({
+		server: "kube",
+		upstreamPort: up.port,
+		authorization: AUTH,
+		allowlistFile: tempAllowlist(t),
+		classifyCall: (_server, tool) =>
+			tool === "pods_list"
+				? { decision: "deny", reasons: ["context x is skipped in tiers.json"], allowlist: {} }
+				: { decision: "allow", reasons: [], allowlist: {} },
+		confirm: async (text) => (prompts.push(text), "allow"),
+		log: (record) => logged.push(record),
+	});
+	guard.listen(0, "127.0.0.1");
+	await once(guard, "listening");
+	t.after(() => guard.close());
+
+	const res = await post(guard.address().port, JSON.stringify([call(1, "pods_log", {}), call(2, "pods_list", {})]));
+
+	assert.equal(up.seen.length, 0);
+	assert.equal(prompts.length, 0);
+	const answers = JSON.parse(res.text);
+	assert.deepEqual(answers.map((a) => a.id), [1, 2]);
+	assert.match(
+		answers[1].result.content[0].text,
+		/^Blocked by the MCP guard \(context x is skipped in tiers\.json\): the guard's configuration refuses it without asking\./,
+	);
+	assert.deepEqual(logged.map((r) => r.decision), ["refused", "refused"]);
+});

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { accountOf, groupByTier, guessTier, knownTier, parseTierAnswer, readJson, withDisabled, writeJson } from "./wizard.mjs";
+import { accountOf, groupByTier, guessTier, parseTierAnswer, readJson, withDisabled, writeJson } from "./wizard.mjs";
 
 test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to prd", () => {
 	assert.equal(guessTier("arn:aws:eks:eu-central-1:430896782353:cluster/intl-dev-stardust-cluster"), "dev");
@@ -15,15 +15,6 @@ test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to 
 	assert.equal(guessTier("stage-prod"), "prd", "a prod marker beats a lower one");
 	assert.equal(guessTier("PRD-ReadOnly"), "prd");
 	assert.equal(guessTier("default"), "prd");
-});
-
-test("knownTier finds the stored tier and ignores malformed sections", () => {
-	const section = { dev: ["a"], prd: ["b"], ppd: "not-a-list", skip: ["c"] };
-	assert.equal(knownTier(section, "a"), "dev");
-	assert.equal(knownTier(section, "c"), "skip", "a skipped name stays skipped on the next run");
-	assert.equal(knownTier(section, "b"), "prd");
-	assert.equal(knownTier(section, "not-a-list"), undefined);
-	assert.equal(knownTier(undefined, "a"), undefined);
 });
 
 test("groupByTier always returns every list, skip included", () => {

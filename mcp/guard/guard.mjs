@@ -3,8 +3,9 @@
  *
  * Forwards every request to the server on upstreamPort with the guard's own
  * Authorization header, replacing any the client sent, and streams the
- * response back. Each tools/call in a POST body (one message or a batch) is
- * classified by the policy first. When a call needs confirmation the user is
+ * response back; a forward function given to createGuard replaces that
+ * transport (stdio.mjs for servers that speak stdio). Each tools/call in a
+ * POST body (one message or a batch) is classified by the policy first. When a call needs confirmation the user is
  * asked in a native dialog; a denied request is answered by the guard with a
  * tool error and never reaches the server. A POST body that is not JSON or
  * exceeds MAX_BODY_BYTES is refused, so nothing the guard cannot read is
@@ -146,11 +147,15 @@ function dialogText(server, flagged) {
 	return `${heading}\n${blocks.join("\n\n")}`;
 }
 
-/** The guard's own JSON-RPC answer to parsed: a tool error for each tools/call, an error for any other request. */
-function denial(parsed, reasons) {
-	const text =
-		`Blocked by the MCP guard (${reasons.join("; ")}): the user denied the call or did not answer within ` +
-		`${DIALOG_TIMEOUT_S} s. Do not retry it or reach the server another way; ask the user.`;
+const DENIED_BY_USER = `the user denied the call or did not answer within ${DIALOG_TIMEOUT_S} s`;
+const REFUSED = "the guard's configuration refuses it without asking";
+
+/**
+ * The guard's own JSON-RPC answer to parsed, naming reasons and cause: a tool
+ * error for each tools/call, an error for any other request.
+ */
+function denial(parsed, reasons, cause) {
+	const text = `Blocked by the MCP guard (${reasons.join("; ")}): ${cause}. Do not retry it or reach the server another way; ask the user.`;
 	const answer = (m) =>
 		m.method === "tools/call"
 			? { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text }], isError: true } }
@@ -167,7 +172,7 @@ function reply(res, status, text) {
  * Sends req to the server of g with g's Authorization and streams the answer
  * to res. body replaces the request stream when the guard has read it.
  */
-function forward(g, req, res, body) {
+function forwardHttp(g, req, res, body) {
 	const headers = without(req.headers, DROP_REQUEST);
 	headers.host = `${LISTEN_HOST}:${g.upstreamPort}`;
 	headers.authorization = g.authorization;
@@ -201,7 +206,11 @@ function verdictsOf(g, parsed) {
 		});
 }
 
-/** Reads and classifies a POST, asks the user when needed, then forwards it or answers with a denial. */
+/**
+ * Reads and classifies a POST, then answers it with a denial when a call is
+ * refused ("deny" verdict, no dialog), asks the user when a call needs
+ * confirmation, and forwards it or answers with a denial.
+ */
 async function inspect(g, req, res) {
 	const body = await readBody(req, MAX_BODY_BYTES);
 	if (body === null) return reply(res, 413, "request body too large");
@@ -212,6 +221,13 @@ async function inspect(g, req, res) {
 		return reply(res, 400, "request body is not JSON");
 	}
 	const verdicts = verdictsOf(g, parsed);
+	const refused = verdicts.filter((v) => v.decision === "deny");
+	if (refused.length > 0) {
+		// Nothing in the request is sent, so every call in it is logged as refused.
+		for (const { tool, reasons } of verdicts) g.log({ server: g.server, tool, decision: "refused", reasons });
+		const refusal = JSON.stringify(denial(parsed, refused.flatMap((v) => v.reasons), REFUSED));
+		return res.writeHead(200, { "content-type": "application/json" }).end(refusal);
+	}
 	const flagged = verdicts.filter((v) => v.decision === "confirm");
 	const offer = flagged.length > 0 ? allowlistOffer(g, flagged) : null;
 	const always = offer ? `Always allow ${Object.values(offer).flat().join(", ")}` : undefined;
@@ -231,8 +247,8 @@ async function inspect(g, req, res) {
 			console.error(`mcpguard ${g.server}: cannot save ${g.allowlistFile}: ${err.message}`);
 		}
 	}
-	if (approved) return forward(g, req, res, body);
-	const refusal = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons)));
+	if (approved) return g.forward(req, res, body);
+	const refusal = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons), DENIED_BY_USER));
 	res.writeHead(200, { "content-type": "application/json" }).end(refusal);
 }
 
@@ -244,7 +260,7 @@ function route(g, port, req, res) {
 		return;
 	}
 	if (g.extra(req, res)) return;
-	if (req.method !== "POST") return forward(g, req, res);
+	if (req.method !== "POST") return g.forward(req, res);
 	inspect(g, req, res).catch((err) => {
 		// Fails closed: nothing is forwarded after an error in the inspection.
 		console.error(`mcpguard ${g.server}: ${err.message}`);
@@ -255,13 +271,19 @@ function route(g, port, req, res) {
 
 /**
  * Creates the guard server; it is not listening yet, and the Host check uses
- * the port it is bound to. server names the policy ("github", "jira", "jflow");
- * authorization is the Authorization header value sent upstream; policy holds
- * the classify options (owners, jiraProjects, ownEmails), extended by server's
- * entries in allowlistFile. extra(req, res) runs after the Host check and may
- * answer a request itself by returning true. confirm(text, { always }) resolves
- * "allow", "always" or "deny". confirm, classifyCall and log default to the
- * dialog, the policy and the audit log.
+ * the port it is bound to. server names the policy ("github", "jira", "jflow",
+ * "kube", "aws", "vcluster"); authorization is the Authorization header value
+ * sent upstream; policy holds the classify options (owners, jiraProjects,
+ * ownEmails, and whatever a server's own classifyCall reads), extended by
+ * server's entries in allowlistFile. extra(req, res) runs after the Host check
+ * and may answer a request itself by returning true. confirm(text, { always })
+ * resolves "allow", "always" or "deny". classifyCall(server, tool, args,
+ * policy) returns { decision: "allow" | "confirm" | "deny", reasons,
+ * allowlist }; "deny" refuses the whole request without a dialog. confirm,
+ * classifyCall and log default to the dialog, the policy and the audit log.
+ * forward(req, res, body) delivers an approved request and answers res; body
+ * is the read POST body and absent for other methods. It defaults to HTTP
+ * forwarding to upstreamPort with authorization.
  */
 export function createGuard({
 	server,
@@ -270,6 +292,7 @@ export function createGuard({
 	policy = {},
 	allowlistFile = ALLOWLIST_FILE,
 	extra = () => false,
+	forward,
 	confirm = askUser,
 	classifyCall = classify,
 	log = auditLog,
@@ -285,6 +308,7 @@ export function createGuard({
 		classifyCall,
 		log,
 	};
+	g.forward = forward ?? ((req, res, body) => forwardHttp(g, req, res, body));
 	const httpServer = http.createServer((req, res) => route(g, httpServer.address().port, req, res));
 	return httpServer;
 }
@@ -319,6 +343,18 @@ function waitForPort(port, timeoutMs) {
 	});
 }
 
+/** Stops child and exits on SIGTERM and SIGINT. */
+export function stopWithSignals(child) {
+	// DEV-NOTE: no SIGHUP handler. nohup sets SIGHUP to ignored; a handler would
+	// replace that and stop the guard when the starting terminal closes.
+	for (const sig of ["SIGTERM", "SIGINT"]) {
+		process.on(sig, () => {
+			child.kill("SIGTERM");
+			process.exit(0);
+		});
+	}
+}
+
 /**
  * Starts command with args and env as the guarded MCP server, waits until it
  * listens on upstreamPort, then serves guard on listenPort. The process exits
@@ -335,14 +371,7 @@ export async function serve({ name, command, args, env, upstreamPort, listenPort
 		console.error(`${name}: ${command} exited (${signal ?? code})`);
 		process.exit(1);
 	});
-	// DEV-NOTE: no SIGHUP handler. nohup sets SIGHUP to ignored; a handler would
-	// replace that and stop the guard when the starting terminal closes.
-	for (const sig of ["SIGTERM", "SIGINT"]) {
-		process.on(sig, () => {
-			child.kill("SIGTERM");
-			process.exit(0);
-		});
-	}
+	stopWithSignals(child);
 	try {
 		await waitForPort(upstreamPort, startTimeoutMs);
 	} catch (err) {
