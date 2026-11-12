@@ -115,6 +115,7 @@ async function choose(rl, question, choices, def) {
 		const answer = (await rl.question(`${question} [${choices.join("/")}] (${def}) `)).trim();
 		if (answer === "") return def;
 		if (choices.includes(answer)) return answer;
+		console.log(`    answer one of ${choices.join(", ")}, or Enter for ${def}`);
 	}
 }
 
@@ -127,6 +128,7 @@ async function select(rl, question, options, def) {
 		if (answer === "") return def;
 		const i = Number(answer);
 		if (Number.isInteger(i) && i >= 1 && i <= options.length) return options[i - 1];
+		console.log(`    answer 1 to ${options.length}, or Enter for the default`);
 	}
 }
 
@@ -205,10 +207,23 @@ function kubeContexts(dir) {
 	return [...seen].map(([context, file]) => ({ context, file }));
 }
 
-/** Asks the tier of each name; the stored tier, else the guess, is the default. */
-async function askTiers(rl, names, section) {
+/** AWS account ID of a profile from its sso_account_id, else from the account field of its role_arn; undefined when neither names one. */
+export function accountOf(ssoAccountId, roleArn) {
+	if (/^\d{12}$/.test(ssoAccountId ?? "")) return ssoAccountId;
+	return roleArn?.match(/^arn:aws[\w-]*:iam::(\d{12}):/)?.[1];
+}
+
+/** AWS account ID of profile as configured in ~/.aws/config; no AWS call, so no login or MFA prompt. */
+function profileAccount(profile) {
+	const get = (key) => output("aws", ["configure", "get", key, "--profile", profile]) ?? undefined;
+	return accountOf(get("sso_account_id"), get("role_arn"));
+}
+
+/** Asks the tier of each name, shown with its label; the stored tier, else the guess, is the default. */
+async function askTiers(rl, names, section, label = () => "") {
 	const answers = {};
-	for (const name of names) answers[name] = await choose(rl, `  ${name}`, TIERS, knownTier(section, name) ?? guessTier(name));
+	for (const name of names)
+		answers[name] = await choose(rl, `    ${name}${label(name)}`, TIERS, knownTier(section, name) ?? guessTier(name));
 	return answers;
 }
 
@@ -219,11 +234,16 @@ async function tiersStep(rl) {
 
 	const contexts = kubeContexts(KUBE_DIR);
 	if (contexts.length === 0) console.log(`  no contexts in ${KUBE_DIR}/*.yaml (or kubectl missing); Kubernetes tiers kept`);
+	else console.log(`  Kubernetes contexts (${KUBE_DIR}/*.yaml):`);
 	const kube = await askTiers(rl, contexts.map((c) => c.context), existing.kube);
 
 	const profiles = (output("aws", ["configure", "list-profiles"]) ?? "").split("\n").filter(Boolean);
 	if (profiles.length === 0) console.log("  no AWS profiles (or aws missing); AWS tiers kept");
-	const aws = await askTiers(rl, profiles, existing.aws);
+	else console.log("  AWS profiles (aws configure list-profiles); the tier covers everything the profile can reach in its account:");
+	const aws = await askTiers(rl, profiles, existing.aws, (profile) => {
+		const account = profileAccount(profile);
+		return account ? ` (account ${account})` : "";
+	});
 	let awsDefault = existing.aws?.default;
 	if (profiles.length > 0) {
 		const fallback = profiles.includes(awsDefault) ? awsDefault : (profiles.find((p) => aws[p] === "dev") ?? profiles[0]);

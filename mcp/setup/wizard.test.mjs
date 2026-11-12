@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { groupByTier, guessTier, knownTier, readJson, withDisabled, writeJson } from "./wizard.mjs";
+import { accountOf, groupByTier, guessTier, knownTier, readJson, withDisabled, writeJson } from "./wizard.mjs";
 
 test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to prd", () => {
 	assert.equal(guessTier("arn:aws:eks:eu-central-1:430896782353:cluster/intl-dev-stardust-cluster"), "dev");
@@ -52,4 +52,12 @@ test("readJson returns the fallback only for a missing file and refuses broken J
 
 	fs.writeFileSync(file, "{ broken");
 	assert.throws(() => readJson(file, {}), /x\.json/);
+});
+
+test("accountOf prefers sso_account_id, falls back to the role ARN, and rejects other shapes", () => {
+	assert.equal(accountOf("757149606988", "arn:aws:iam::430896782353:role/x"), "757149606988");
+	assert.equal(accountOf(undefined, "arn:aws:iam::430896782353:role/admin"), "430896782353");
+	assert.equal(accountOf("", "arn:aws-us-gov:iam::123456789012:role/r"), "123456789012");
+	assert.equal(accountOf("not-an-id", "arn:aws:sts::430896782353:assumed-role/x"), undefined, "no iam ARN");
+	assert.equal(accountOf(undefined, undefined), undefined, "static or MFA session keys name no account");
 });
