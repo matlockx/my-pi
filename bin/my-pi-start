@@ -4,7 +4,9 @@
 # and, when jflow is on PATH, the jflow MCP server (127.0.0.1:8765, the
 # JFLOW_MCP_URL of the jflow-mcp extension). GitHub, Jira and jflow run behind
 # the MCP guard (my-pi/mcp/guard), their real servers on 18082, 18084 and
-# 18765. A server already listening is left alone.
+# 18765. A server already listening is left alone. Servers listed in
+# disabledServers of ~/.omp/agent/mcp.json (set by the MCP setup wizard,
+# my-pi/mcp/setup/wizard.mjs) are not started.
 #
 #   my-pi-start            start what is not running
 #   my-pi-start restart    stop every server, then start them all
@@ -99,11 +101,25 @@ switch "$argv[1]"
         exit 2
 end
 
+# Empty when the file or jq is missing: then every server starts.
+set -l disabled (jq -r '.disabledServers[]? // empty' ~/.omp/agent/mcp.json 2>/dev/null)
+set -l off "disabled (disabledServers in ~/.omp/agent/mcp.json)"
+
 set -l failed 0
-ghmcp start; or set failed 1
+if contains github $disabled
+    echo "ghmcp: $off"
+else
+    ghmcp start; or set failed 1
+end
 gomodproxy start; or set failed 1
-jiramcp start; or set failed 1
-if command -q jflow
+if contains jira $disabled
+    echo "jiramcp: $off"
+else
+    jiramcp start; or set failed 1
+end
+if contains jflow $disabled
+    echo "jflow mcp: $off"
+else if command -q jflow
     __my_pi_jflow_start $jflow_port $jflow_log; or set failed 1
 else
     echo "jflow mcp: jflow not on PATH; not started"

@@ -151,6 +151,17 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 	assert.match(missingNode.actions[1], /^node not on PATH is older than 24\.2/);
 });
 
+test("skips the GitHub and Jira checks for servers in disabledServers", async (t) => {
+	const { repo, home } = fixture(t);
+	fs.writeFileSync(join(home, ".omp/agent/mcp.json"), JSON.stringify({ disabledServers: ["github", "jira"] }));
+	const allDown = { run: async (cmd) => ({ node: "v26.7.0", go: SANDBOX_GOPROXY })[cmd] ?? null, portOpen: async () => false };
+
+	const { actions } = await runChecks({ repo, home, ...allDown });
+
+	assert.equal(actions.length, 1, "only the Go module proxy, which is no MCP server");
+	assert.match(actions[0], /^Go module proxy not listening/);
+});
+
 test("reports a stopped Go module proxy only when GOPROXY points at it", async (t) => {
 	const { repo, home } = fixture(t);
 	const goDown = async (port) => port !== 8083;

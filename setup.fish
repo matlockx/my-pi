@@ -9,9 +9,10 @@
 #
 # Links AGENTS.md and the fish conf.d loader, moves shadowed copies of the
 # repo's fish functions, installs missing Homebrew tools, logs gh in, drops a
-# user-level "github" MCP entry that outranks my-pi/mcp.json, and copies the
-# proxy starter to ~/bin/my-pi-start. The proxies are not started; run
-# my-pi-start after each login.
+# user-level "github" MCP entry that outranks my-pi/mcp.json, runs the MCP setup
+# wizard (mcp/setup/wizard.mjs: which MCP servers to use, what each needs, the
+# Kubernetes/AWS tier map), and copies the proxy starter to ~/bin/my-pi-start.
+# The proxies are not started; run my-pi-start after each login.
 
 set -l repo (path dirname (path resolve (status filename)))
 
@@ -61,7 +62,7 @@ function __my_pi_node_ok
 end
 
 set -l formulae
-for tool in gh github-mcp-server jq uv
+for tool in gh jq uv
     command -q $tool; or set -a formulae $tool
 end
 __my_pi_node_ok; or set -a formulae node
@@ -96,14 +97,9 @@ else
     end
 end
 
-if command -q acli
-    set -l email (acli jira auth status 2>/dev/null | string match -rg '^\s*Email:\s*(\S+)')
-    if test -n "$email"; and not security find-generic-password -s jira-mcp -a $email >/dev/null 2>&1
-        echo "note: no Jira API token in the keychain, so jiramcp will not start; create one at https://id.atlassian.com/manage-profile/security/api-tokens, then: read -s -P 'Jira API token: ' t; and security add-generic-password -U -s jira-mcp -a $email -w \$t; set -e t"
-    end
-else
-    echo "note: acli not on PATH; jiramcp needs it for the Jira site and e-mail (https://developer.atlassian.com/cloud/acli/guides/install-macos/)"
-end
+# Asks per MCP server (GitHub, Jira, jflow) and for the Kubernetes/AWS tiers; installs or
+# stores what each needs.
+node $repo/mcp/setup/wizard.mjs; or exit 1
 
 mkdir -p ~/bin
 cp $repo/bin/my-pi-start ~/bin/my-pi-start

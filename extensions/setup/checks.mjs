@@ -4,7 +4,8 @@
  * runChecks() creates missing symlinks it can write and returns, for every
  * other gap, one line with the host-shell command that closes it. It never
  * replaces or deletes an existing file, never starts a process that holds a
- * credential, and never edits a config file.
+ * credential, and never edits a config file. Servers listed in disabledServers
+ * of ~/.omp/agent/mcp.json (set by mcp/setup/wizard.mjs) are not checked.
  */
 
 import { execFile } from "node:child_process";
@@ -110,13 +111,12 @@ function atLeast(version, min) {
 	return version[0] > min[0] || (version[0] === min[0] && version[1] >= min[1]);
 }
 
-/** Server names in the user-level omp mcp.json; empty when the file is absent or not JSON. */
-function userMcpServers(home) {
+/** The user-level omp mcp.json; empty when the file is absent or not JSON. */
+function userMcp(home) {
 	try {
-		const parsed = JSON.parse(fs.readFileSync(join(home, ".omp/agent/mcp.json"), "utf8"));
-		return Object.keys(parsed?.mcpServers ?? {});
+		return JSON.parse(fs.readFileSync(join(home, ".omp/agent/mcp.json"), "utf8")) ?? {};
 	} catch {
-		return [];
+		return {};
 	}
 }
 
@@ -163,13 +163,15 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 		portOpen(GO_MODULE_PROXY_PORT),
 		portOpen(JIRA_MCP_PORT),
 	]);
-	if (mcpVersion === null) actions.push("github-mcp-server not on PATH: brew install github-mcp-server");
+	const mcp = userMcp(home);
+	const disabled = new Set(Array.isArray(mcp.disabledServers) ? mcp.disabledServers : []);
+	if (mcpVersion === null && !disabled.has("github")) actions.push("github-mcp-server not on PATH: brew install github-mcp-server");
 	const node = parseNodeVersion(nodeVersion);
 	if (node === null || !atLeast(node, MIN_NODE))
 		actions.push(
 			`node ${nodeVersion ?? "not on PATH"} is older than ${MIN_NODE.join(".")} (GitHub MCP proxy): brew install node`,
 		);
-	if (userMcpServers(home).includes("github")) {
+	if (Object.hasOwn(mcp.mcpServers ?? {}, "github")) {
 		const file = join(home, ".omp/agent/mcp.json");
 		// DEV-NOTE: chmod before mv keeps the file private; it holds other servers' credentials.
 		actions.push(
@@ -179,7 +181,9 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	}
 	// DEV-NOTE: the Go proxy matters only where the session's GOPROXY points at it (set by the nono
 	// profile on Macs with GOPRIVATE modules); elsewhere go reaches proxy.golang.org directly.
-	actions.push(...proxyActions(proxyUp, goProxyUp || !usesGoModuleProxy(goProxy), jiraUp));
+	actions.push(
+		...proxyActions(proxyUp || disabled.has("github"), goProxyUp || !usesGoModuleProxy(goProxy), jiraUp || disabled.has("jira")),
+	);
 	return { fixed, actions };
 }
 
