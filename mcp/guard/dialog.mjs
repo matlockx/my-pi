@@ -9,12 +9,15 @@ import { execFile } from "node:child_process";
 /** Seconds a dialog waits before it counts as denied; below omp's 120 s MCP timeout. */
 export const DIALOG_TIMEOUT_S = 110;
 
-// DEV-NOTE: message and title arrive as argv, never spliced into the script, so text from
-// the tool arguments cannot inject AppleScript. "Deny" is default and cancel button: Return,
-// Escape and the timeout all deny.
+// DEV-NOTE: heading, detail and the "always" label arrive as argv, never spliced into the script,
+// so text from the tool arguments cannot inject AppleScript. "Deny" is default and cancel button:
+// Return, Escape and the timeout all deny. "display alert" gives the bold heading plus smaller
+// detail text; the optional fourth argument becomes the leftmost button, away from the default.
 const SCRIPT = [
 	"on run argv",
-	'display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Deny", "Allow"} default button "Deny" cancel button "Deny" giving up after ((item 3 of argv) as integer) with icon caution',
+	'set choices to {"Deny", "Allow"}',
+	"if (count of argv) > 3 then set beginning of choices to item 4 of argv",
+	'display alert (item 1 of argv) message (item 2 of argv) as critical buttons choices default button "Deny" cancel button "Deny" giving up after ((item 3 of argv) as integer)',
 	"return button returned of result",
 	"end run",
 ].flatMap((line) => ["-e", line]);
@@ -22,17 +25,23 @@ const SCRIPT = [
 let queue = Promise.resolve();
 
 /**
- * Shows message in an Allow/Deny dialog and resolves true only when Allow was
- * clicked; Deny, a timeout or a failure to show the dialog resolve false.
- * Dialogs are shown one at a time in call order. run defaults to execFile.
+ * Shows message in an alert and resolves "allow" when Allow was clicked,
+ * "always" when the extra button labelled always was clicked, and "deny" for
+ * Deny, a timeout or a failure to show the alert. Without always only Deny
+ * and Allow appear. The first line of message is the bold heading, the rest
+ * the detail text. Alerts are shown one at a time in call order. run defaults
+ * to execFile.
  */
-export function askUser(message, { title = "MCP guard", timeoutS = DIALOG_TIMEOUT_S, run = execFile } = {}) {
+export function askUser(message, { always, timeoutS = DIALOG_TIMEOUT_S, run = execFile } = {}) {
+	const [heading, ...detail] = message.split("\n");
+	const args = [...SCRIPT, heading, detail.join("\n"), String(timeoutS), ...(always ? [always] : [])];
 	const answer = queue.then(
 		() =>
 			new Promise((resolve) => {
-				run("osascript", [...SCRIPT, message, title, String(timeoutS)], { timeout: (timeoutS + 5) * 1000 }, (err, stdout) =>
-					resolve(!err && String(stdout).trim() === "Allow"),
-				);
+				run("osascript", args, { timeout: (timeoutS + 5) * 1000 }, (err, stdout) => {
+					const button = err ? "" : String(stdout).trim();
+					resolve(button === "Allow" ? "allow" : always && button === always ? "always" : "deny");
+				});
 			}),
 	);
 	queue = answer;

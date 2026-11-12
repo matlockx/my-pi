@@ -96,21 +96,27 @@ function jiraProjects(args) {
 		.filter((project) => /^[A-Z][A-Z0-9]+$/.test(project));
 }
 
-/** Findings about what a GitHub call targets: default-branch file writes and foreign owners. */
-function githubTargetReasons(tool, input, write, owners) {
-	const reasons = [];
-	if (FILE_WRITES.has(tool) && (!input.branch || DEFAULT_BRANCHES.has(input.branch)))
-		reasons.push(`writes files to the default branch (${input.branch || "default"})`);
-	if (write && typeof input.owner === "string" && !owners.includes(input.owner.toLowerCase()))
-		reasons.push(`repository owner ${input.owner} is not in the allowlist`);
-	return reasons;
+/** Finding about GitHub file writes to the default branch. */
+function defaultBranchReasons(tool, input) {
+	return FILE_WRITES.has(tool) && (!input.branch || DEFAULT_BRANCHES.has(input.branch))
+		? [`writes files to the default branch (${input.branch || "default"})`]
+		: [];
 }
 
-/** Finding about Jira projects outside projects that a write targets; none when projects is empty. */
-function jiraTargetReasons(input, write, projects) {
-	if (!write || projects.length === 0) return [];
-	const foreign = [...new Set(jiraProjects(input).filter((p) => !projects.includes(p)))];
-	return foreign.length > 0 ? [`Jira project ${foreign.join(", ")} is not in the allowlist`] : [];
+/**
+ * Allowlist entries a write lacks: { owners } (lower case) for a GitHub owner
+ * outside owners, { jiraProjects } for Jira projects outside projects; none
+ * when projects is empty.
+ */
+function missingEntries(server, input, write, owners, projects) {
+	if (!write) return {};
+	if (server === "github" && typeof input.owner === "string" && !owners.includes(input.owner.toLowerCase()))
+		return { owners: [input.owner.toLowerCase()] };
+	if (server === "jira" && projects.length > 0) {
+		const foreign = [...new Set(jiraProjects(input).filter((p) => !projects.includes(p)))];
+		if (foreign.length > 0) return { jiraProjects: foreign };
+	}
+	return {};
 }
 
 /** Findings about the argument values: secrets anywhere, personal data in free-text fields. */
@@ -131,16 +137,20 @@ function contentReasons(input, ownEmails) {
  * owners: lower-case GitHub owners writes may target. jiraProjects: Jira project
  * keys writes may target; empty disables that check. ownEmails: lower-case
  * addresses that are not reported as personal data.
- * Returns { decision: "allow" | "confirm", reasons } with one reason per finding.
+ * Returns { decision: "allow" | "confirm", reasons, allowlist } with one reason
+ * per finding; allowlist holds the owners or jiraProjects entries whose
+ * absence caused a finding.
  */
 export function classify(server, tool, args, { owners = [], jiraProjects: projects = [], ownEmails = [] } = {}) {
 	const input = args && typeof args === "object" ? args : {};
 	const write = !READ.test(tool);
+	const allowlist = missingEntries(server, input, write, owners, projects);
 	const reasons = [
 		...(DESTRUCTIVE[server]?.has(tool) ? [`destructive tool ${tool}`] : []),
-		...(server === "github" ? githubTargetReasons(tool, input, write, owners) : []),
-		...(server === "jira" ? jiraTargetReasons(input, write, projects) : []),
+		...(server === "github" ? defaultBranchReasons(tool, input) : []),
+		...(allowlist.owners ? [`repository owner ${input.owner} is not in the allowlist`] : []),
+		...(allowlist.jiraProjects ? [`Jira project ${allowlist.jiraProjects.join(", ")} is not in the allowlist`] : []),
 		...contentReasons(input, ownEmails),
 	];
-	return { decision: reasons.length > 0 ? "confirm" : "allow", reasons };
+	return { decision: reasons.length > 0 ? "confirm" : "allow", reasons, allowlist };
 }

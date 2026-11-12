@@ -28,6 +28,7 @@ test("writes outside the owner allowlist need confirmation; reads do not", () =>
 	assert.deepEqual(decide("github", "create_pull_request", { owner: "Evil", repo: "r", title: "t", head: "a", base: "b" }).reasons, [
 		"repository owner Evil is not in the allowlist",
 	]);
+	assert.deepEqual(decide("github", "create_pull_request", { owner: "Evil", repo: "r", title: "t", head: "a", base: "b" }).allowlist, { owners: ["evil"] });
 	assert.equal(decide("github", "create_branch", { owner: "MatlockX", repo: "r", branch: "b" }).decision, "allow", "owner compared case-insensitively");
 	assert.equal(decide("github", "get_file_contents", { owner: "torvalds", repo: "linux", path: "README" }).decision, "allow");
 	assert.equal(decide("github", "pull_request_read", { owner: "torvalds", repo: "linux", pullNumber: 1 }).decision, "allow");
@@ -35,6 +36,8 @@ test("writes outside the owner allowlist need confirmation; reads do not", () =>
 
 test("Jira writes outside the project allowlist need confirmation; an empty allowlist disables the check", () => {
 	assert.deepEqual(decide("jira", "jira_add_comment", { issue_key: "OTHER-7", comment: "x" }).reasons, ["Jira project OTHER is not in the allowlist"]);
+	assert.deepEqual(decide("jira", "jira_add_comment", { issue_key: "OTHER-7", comment: "x" }).allowlist, { jiraProjects: ["OTHER"] });
+	assert.deepEqual(decide("jira", "jira_delete_issue", { issue_key: "STAR-1" }).allowlist, {}, "no entry for findings an allowlist cannot clear");
 	assert.equal(decide("jira", "jira_create_issue", { project_key: "STAR", summary: "s" }).decision, "allow");
 	assert.equal(decide("jira", "jira_get_issue", { issue_key: "OTHER-7" }).decision, "allow", "reads pass");
 	assert.equal(decide("jira", "jira_add_comment", { issue_key: "OTHER-7", comment: "x" }, { ...OPTS, jiraProjects: [] }).decision, "allow");

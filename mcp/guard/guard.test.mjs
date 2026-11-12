@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { join } from "node:path";
 
 import { allowedHost, createGuard, MAX_BODY_BYTES } from "./guard.mjs";
 
@@ -24,17 +27,30 @@ async function startUpstream(t) {
 	return { seen, port: server.address().port };
 }
 
-/** Starts a guard for "github" in front of upstreamPort; answers the dialog with answer and records prompts and log records. */
-async function startGuard(t, upstreamPort, answer) {
+/** Path of an allowlist file in a fresh temporary directory, removed after t. */
+function tempAllowlist(t) {
+	const dir = mkdtempSync(join(os.tmpdir(), "mcpguard-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	return join(dir, "allowlist.json");
+}
+
+/**
+ * Starts a guard for "github" in front of upstreamPort; answers the dialog with answer ("allow",
+ * "always", "deny") and records prompts, offered "always" labels and log records.
+ */
+async function startGuard(t, upstreamPort, answer, allowlistFile = tempAllowlist(t)) {
 	const prompts = [];
+	const offers = [];
 	const logged = [];
 	const guard = createGuard({
 		server: "github",
 		upstreamPort,
 		authorization: AUTH,
 		policy: { owners: ["matlockx"] },
-		confirm: async (text) => {
+		allowlistFile,
+		confirm: async (text, { always }) => {
 			prompts.push(text);
+			offers.push(always);
 			return answer;
 		},
 		log: (record) => logged.push(record),
@@ -42,7 +58,7 @@ async function startGuard(t, upstreamPort, answer) {
 	guard.listen(0, "127.0.0.1");
 	await once(guard, "listening");
 	t.after(() => guard.close());
-	return { port: guard.address().port, prompts, logged };
+	return { port: guard.address().port, prompts, offers, logged };
 }
 
 /** POSTs body to the guard and returns status and response text. */
@@ -90,19 +106,19 @@ test("an allowed call reaches the server unchanged with the guard's Authorizatio
 
 test("a flagged call reaches the server only after Allow", async (t) => {
 	const up = await startUpstream(t);
-	const g = await startGuard(t, up.port, true);
+	const g = await startGuard(t, up.port, "allow");
 
 	const res = await post(g.port, JSON.stringify(DELETE));
 
 	assert.equal(res.text, '{"ok":true}');
 	assert.equal(up.seen.length, 1);
-	assert.match(g.prompts[0], /^github: delete_file\n• destructive tool delete_file\n\n\{"owner":"matlockx"/);
+	assert.match(g.prompts[0], /^Allow delete_file on github\?\n• destructive tool delete_file\n\n\{\n {2}"owner": "matlockx"/);
 	assert.equal(g.logged[0].decision, "approved");
 });
 
 test("a denied call never reaches the server and returns a tool error for its id", async (t) => {
 	const up = await startUpstream(t);
-	const g = await startGuard(t, up.port, false);
+	const g = await startGuard(t, up.port, "deny");
 
 	const res = await post(g.port, JSON.stringify(DELETE));
 
@@ -116,7 +132,7 @@ test("a denied call never reaches the server and returns a tool error for its id
 
 test("a denied batch answers every request in it and forwards nothing", async (t) => {
 	const up = await startUpstream(t);
-	const g = await startGuard(t, up.port, false);
+	const g = await startGuard(t, up.port, "deny");
 	const batch = [{ jsonrpc: "2.0", id: 1, method: "ping" }, COMMENT, DELETE, { jsonrpc: "2.0", method: "notifications/x" }];
 
 	const res = await post(g.port, JSON.stringify(batch));
@@ -126,6 +142,49 @@ test("a denied batch answers every request in it and forwards nothing", async (t
 	assert.deepEqual(answers.map((a) => a.id), [1, 8, 7]);
 	assert.equal(answers[0].error.code, -32001);
 	assert.deepEqual(g.logged.map((r) => r.decision), ["allow", "denied"]);
+});
+
+test("Always allow stores the owner, and later calls and restarts pass without asking", async (t) => {
+	const up = await startUpstream(t);
+	const file = tempAllowlist(t);
+	const g = await startGuard(t, up.port, "always", file);
+	const foreign = call(9, "add_issue_comment", { owner: "Other", repo: "r", issue_number: 1, body: "x" });
+
+	await post(g.port, JSON.stringify(foreign));
+	await post(g.port, JSON.stringify(foreign));
+	const restarted = await startGuard(t, up.port, "deny", file);
+	await post(restarted.port, JSON.stringify(foreign));
+
+	assert.deepEqual(g.offers, ["Always allow other"]);
+	assert.equal(restarted.prompts.length, 0);
+	assert.equal(up.seen.length, 3);
+	assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { github: { owners: ["other"] } });
+});
+
+test("Always allow is not offered while another finding remains", async (t) => {
+	const up = await startUpstream(t);
+	const file = tempAllowlist(t);
+	const g = await startGuard(t, up.port, "always", file);
+	const foreignDelete = call(9, "delete_file", { owner: "Other", repo: "r", path: "a", branch: "b", message: "m" });
+
+	const res = await post(g.port, JSON.stringify(foreignDelete));
+
+	assert.deepEqual(g.offers, [undefined]);
+	assert.equal(up.seen.length, 0, "an unoffered always answer is a denial");
+	assert.match(res.text, /Blocked by the MCP guard/);
+	assert.throws(() => readFileSync(file), { code: "ENOENT" });
+});
+
+test("a hand-edited owner in mixed case still matches", async (t) => {
+	const up = await startUpstream(t);
+	const file = tempAllowlist(t);
+	writeFileSync(file, JSON.stringify({ github: { owners: ["Other"] } }));
+	const g = await startGuard(t, up.port, "deny", file);
+
+	await post(g.port, JSON.stringify(call(9, "add_issue_comment", { owner: "OTHER", repo: "r", issue_number: 1, body: "x" })));
+
+	assert.equal(g.prompts.length, 0);
+	assert.equal(up.seen.length, 1);
 });
 
 test("a body the guard cannot read is refused, not forwarded", async (t) => {
