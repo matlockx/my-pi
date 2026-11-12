@@ -1,5 +1,6 @@
 /**
- * fileguard — hard-block reads of secret-bearing files (.env, *.tfvars, ...).
+ * fileguard — hard-block reads of secret-bearing files (.env, *.tfvars, ...),
+ * keychain reads that print a secret, and irreversible acli commands.
  *
  * Redaction is a net; this is a wall. Redaction still runs for anything that
  * slips past (e.g. `docker compose config` printing env values).
@@ -49,6 +50,18 @@ const KEYCHAIN_REASON =
 	"Blocked: this command prints a keychain secret into the tool trace, which is shown and logged unredacted. " +
 	"Do not load secrets into the agent shell. Ask the user to run the command in their own terminal.";
 
+// acli commands that cannot be undone, or that hand Jira access to another agent
+// (rovodev). Matched after quotes and backslashes are removed, so `ac''li`,
+// `"acli", "jira", ...` argv lists and `bash -c "acli ..."` read as plain words.
+// Only the subcommand words directly after acli count: a flag ends the chain, so
+// `--summary "remove x"` is not a verb.
+const ACLI_DESTRUCTIVE =
+	/\bacli(?:[\s,]+[a-z][a-z-]*)*?[\s,]+(?:delete|archive|remove|deactivate|change-owner|rovodev)\b/;
+
+const ACLI_REASON =
+	"Blocked: this acli command makes an irreversible Atlassian change outside the MCP guard, so the user is never asked. " +
+	"Use the jira MCP tool instead (it asks the user first), or ask the user to run the command in their own terminal.";
+
 const REASON = (what: string) =>
 	`Blocked: ${what} is a secret-bearing file. Do not read it. ` +
 	`Ask the user for the specific value, or read a .example/.template variant. ` +
@@ -66,9 +79,11 @@ export function checkToolCall(
 	if (toolName === "bash" || toolName === "eval") {
 		const text = String(input.command ?? input.code ?? "");
 		// DEV-NOTE: lines joined first so a `\`-continued shell line or a multi-line argv list in
-		// eval code cannot split the command from its -w; a newline-separated later command
-		// may then match too, which errs on the side of blocking.
-		if (KEYCHAIN_READ.test(text.replace(/\\?\n/g, " "))) return KEYCHAIN_REASON;
+		// eval code cannot split the command from its flag or verb; a newline-separated later
+		// command may then match too, which errs on the side of blocking.
+		const joined = text.replace(/\\?\n/g, " ");
+		if (KEYCHAIN_READ.test(joined)) return KEYCHAIN_REASON;
+		if (ACLI_DESTRUCTIVE.test(joined.replace(/["'`\\]/g, ""))) return ACLI_REASON;
 		const hits = secretPathsInCommand(text);
 		return hits.length ? REASON(hits[0]) : undefined;
 	}

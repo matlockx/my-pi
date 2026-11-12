@@ -83,4 +83,40 @@ assert.equal(
 );
 assert.equal(checkToolCall("bash", { command: "security dump-keychain" }), undefined);
 
+// irreversible acli commands, including quoting and wrapper workarounds
+for (const command of [
+	"acli jira workitem delete --key AB-1 --yes",
+	"/opt/homebrew/bin/acli jira project archive --key AB",
+	"env FOO=1 acli jira workitem watcher remove --key AB-1",
+	'bash -c "acli jira sprint delete --id 1"',
+	"ac''li jira workitem delete --key AB-1",
+	"a\\cli jira workitem delete --key AB-1",
+	"acli jira workitem \\\n  delete --key AB-1",
+	"acli admin user deactivate --email x@example.com",
+	"acli rovodev run",
+]) {
+	assert.ok(checkToolCall("bash", { command }), `should block ${command}`);
+}
+for (const code of [
+	'subprocess.run(["acli", "jira", "workitem", "delete", "--key", "AB-1"])',
+	'subprocess.run([\n  "acli",\n  "jira", "workitem",\n  "delete",\n])',
+	"await Bun.$`acli jira field delete --id 1`",
+]) {
+	assert.ok(checkToolCall("eval", { code }), `should block ${code}`);
+}
+for (const command of [
+	"acli jira workitem view AB-1",
+	"acli jira workitem unarchive --key AB-1",
+	"acli jira workitem search --jql 'project = AB' | grep -c delete",
+	"acli jira auth status",
+]) {
+	assert.equal(checkToolCall("bash", { command }), undefined, `should allow ${command}`);
+}
+assert.equal(
+	checkToolCall("eval", {
+		code: 'subprocess.run(["acli", "jira", "workitem", "create", "--summary", "remove old cache"])',
+	}),
+	undefined,
+);
+
 console.log("fileguard: all checks passed");
