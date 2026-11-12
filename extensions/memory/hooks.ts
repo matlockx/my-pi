@@ -1,8 +1,17 @@
 import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { MemoryStorage } from "./storage";
-import { MEMORY_PROTOCOL } from "./protocol";
-import { exportShared, importShared, loadShareConfig, shareConfigPath, type ImportResult } from "./share";
+import type { Memory, MemoryStorage } from "./storage";
+import { promptKeywords } from "./keywords.ts";
+import { MEMORY_PROTOCOL } from "./protocol.ts";
+import { exportShared, importShared, loadShareConfig, shareConfigPath, type ImportResult } from "./share.ts";
+
+/** customType of the hidden message carrying memories that match the prompt. */
+export const RECALL_TYPE = "memory-recall";
+
+function memoryLine(m: Memory): string {
+	const concepts = m.concepts ? ` (${m.concepts})` : "";
+	return `- [${m.type}] ${m.content}${concepts} — ${m.created_at}\n`;
+}
 
 function describeImport(r: ImportResult): string[] {
 	const parts: string[] = [];
@@ -32,7 +41,8 @@ export function registerHooks(pi: ExtensionAPI, storage: MemoryStorage): void {
 		}
 	});
 
-	// --- Inject relevant memories + protocol into system prompt before each agent turn ---
+	// --- Inject the newest project memories + protocol into the system prompt, and memories
+	// matching the prompt as a hidden message, before each agent turn ---
 	pi.on("before_agent_start", async (event, ctx) => {
 		const project = basename(ctx.cwd);
 		const memories = storage.getByProject(project, 5);
@@ -41,14 +51,35 @@ export function registerHooks(pi: ExtensionAPI, storage: MemoryStorage): void {
 
 		if (memories.length > 0) {
 			memoryBlock += "\n### Relevant memories for this project:\n";
-			for (const m of memories) {
-				const concepts = m.concepts ? ` (${m.concepts})` : "";
-				memoryBlock += `- [${m.type}] ${m.content}${concepts} — ${m.created_at}\n`;
-			}
+			for (const m of memories) memoryBlock += memoryLine(m);
 		}
+
+		// DEV-NOTE: prompt-dependent text goes into a message, not the system prompt, so the
+		// system prompt stays byte-identical between turns and the provider prompt cache holds.
+		// Ids already in the system block or in an earlier recall message on this branch are
+		// skipped; reading them from the branch keeps a retried before_agent_start idempotent.
+		// shortcut: ids recalled before a compaction stay "seen", so a compacted-away memory is not
+		// re-injected; scan only entries after the latest compaction if that loses context.
+		const seen = new Set(memories.map((m) => m.id));
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "custom_message" || entry.customType !== RECALL_TYPE) continue;
+			for (const id of (entry.details as { ids?: string[] } | undefined)?.ids ?? []) seen.add(id);
+		}
+		const related = storage
+			.search(promptKeywords(event.prompt).join(" "), project, 10)
+			.filter((m) => !seen.has(m.id))
+			.slice(0, 3);
 
 		return {
 			systemPrompt: event.systemPrompt + memoryBlock,
+			message: related.length
+				? {
+						customType: RECALL_TYPE,
+						content: `### Memories matching this request:\n${related.map(memoryLine).join("")}`,
+						display: false,
+						details: { ids: related.map((m) => m.id) },
+					}
+				: undefined,
 		};
 	});
 

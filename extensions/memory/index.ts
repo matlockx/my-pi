@@ -5,8 +5,8 @@
  * insights, decisions, and patterns across Pi sessions in a SQLite database
  * at ~/.pi/memory/memories.db.
  *
- * Also auto-injects relevant memories into the system prompt and saves a
- * session summary on quit.
+ * Also injects the newest memories of the project into the system prompt, memories
+ * matching each prompt as a hidden message, and saves a session summary on quit.
  *
  * Sharing with a team: ~/.pi/memory/shared.json lists git checkouts and the
  * projects exported to each, e.g. [{ "repo": "~/projects/stardust-agent-memory",
