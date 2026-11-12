@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 export const MIN_NODE = [24, 2];
 export const GITHUB_MCP_PORT = 8082;
 export const GO_MODULE_PROXY_PORT = 8083;
+export const JIRA_MCP_PORT = 8084;
 
 /**
  * Symlinks the repo owns. `optional` links are skipped when their parent
@@ -154,12 +155,13 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	}
 	actions.push(...checkFishCopies(repo, home));
 
-	const [mcpVersion, nodeVersion, goProxy, proxyUp, goProxyUp] = await Promise.all([
+	const [mcpVersion, nodeVersion, goProxy, proxyUp, goProxyUp, jiraUp] = await Promise.all([
 		run("github-mcp-server", ["--version"]),
 		run("node", ["--version"]),
 		run("go", ["env", "GOPROXY"]),
 		portOpen(GITHUB_MCP_PORT),
 		portOpen(GO_MODULE_PROXY_PORT),
+		portOpen(JIRA_MCP_PORT),
 	]);
 	if (mcpVersion === null) actions.push("github-mcp-server not on PATH: brew install github-mcp-server");
 	const node = parseNodeVersion(nodeVersion);
@@ -177,7 +179,7 @@ export async function runChecks({ repo, home, run = runCommand, portOpen = isLis
 	}
 	// DEV-NOTE: the Go proxy matters only where the session's GOPROXY points at it (set by the nono
 	// profile on Macs with GOPRIVATE modules); elsewhere go reaches proxy.golang.org directly.
-	actions.push(...proxyActions(proxyUp, goProxyUp || !usesGoModuleProxy(goProxy)));
+	actions.push(...proxyActions(proxyUp, goProxyUp || !usesGoModuleProxy(goProxy), jiraUp));
 	return { fixed, actions };
 }
 
@@ -187,7 +189,7 @@ export function usesGoModuleProxy(goProxy) {
 }
 
 /** Action lines for host proxies that are not listening; goOk is true when the Go proxy is up or unused. */
-function proxyActions(githubUp, goOk) {
+function proxyActions(githubUp, goOk, jiraUp) {
 	const out = [];
 	if (!githubUp)
 		out.push(
@@ -196,6 +198,10 @@ function proxyActions(githubUp, goOk) {
 	if (!goOk)
 		out.push(
 			`Go module proxy not listening on 127.0.0.1:${GO_MODULE_PROXY_PORT} (go get/build in the sandbox fails): run my-pi-start in a host terminal`,
+		);
+	if (!jiraUp)
+		out.push(
+			`Jira MCP not listening on 127.0.0.1:${JIRA_MCP_PORT}: run my-pi-start in a host terminal, then /mcp reconnect jira`,
 		);
 	return out;
 }

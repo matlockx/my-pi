@@ -1,45 +1,99 @@
 #!/usr/bin/env fish
 # Starts the my-pi host proxies: GitHub MCP (ghmcp, 127.0.0.1:8082), Go
-# modules (gomodproxy, 127.0.0.1:8083) and, when jflow is on PATH, the jflow
-# MCP server (jflow mcp --http, 127.0.0.1:8765, the JFLOW_MCP_URL of the
-# jflow-mcp extension). A server already listening is left alone.
+# modules (gomodproxy, 127.0.0.1:8083), Jira MCP (jiramcp, 127.0.0.1:8084)
+# and, when jflow is on PATH, the jflow MCP server (jflow mcp --http,
+# 127.0.0.1:8765, the JFLOW_MCP_URL of the jflow-mcp extension). A server
+# already listening is left alone.
+#
+#   my-pi-start            start what is not running
+#   my-pi-start restart    stop every server, then start them all
+#
+# Every call prints one line per server with its pid and log file, whether it
+# was started now or was already running; a server that is not running says
+# why. Keep that contract when adding a server.
+#
 # Run from a host terminal after each login, never from an omp session.
 #
-# Copied to ~/bin by my-pi/setup.fish. ghmcp and gomodproxy come from the
-# ~/.config/fish/conf.d/my-pi.fish link that setup.fish creates.
+# Copied to ~/bin by my-pi/setup.fish. ghmcp, gomodproxy and jiramcp come from
+# the ~/.config/fish/conf.d/my-pi.fish link that setup.fish creates.
+
+set -l jflow_port 8765
+set -l jflow_log ~/.local/state/jflowmcp.log
+
+function __my_pi_listener --argument-names port
+    lsof -t -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null
+end
+
+# Waits up to 10 s for port to be released; returns 1 when it is still taken.
+function __my_pi_wait_free --argument-names port name
+    for i in (seq 10)
+        test -z "$(__my_pi_listener $port)"; and return 0
+        command sleep 1
+    end
+    echo "$name: port $port still in use (pid "(__my_pi_listener $port)")" >&2
+    return 1
+end
+
+function __my_pi_jflow_start --argument-names port logfile
+    set -l listening (__my_pi_listener $port)
+    if test -n "$listening"
+        echo "jflow mcp: already running on http://127.0.0.1:$port/ (pid $listening, log: $logfile)"
+        return 0
+    end
+    mkdir -p (path dirname $logfile)
+    # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
+    # process with a tty stdin is stopped by SIGTTIN.
+    nohup jflow mcp --http 127.0.0.1:$port </dev/null >$logfile 2>&1 &
+    set -l pid $last_pid
+    disown
+    for i in (seq 10)
+        if test -n "$(__my_pi_listener $port)"
+            echo "jflow mcp: up on http://127.0.0.1:$port/ (pid $pid, log: $logfile)"
+            return 0
+        end
+        kill -0 $pid 2>/dev/null; or break
+        command sleep 1
+    end
+    echo "jflow mcp: not listening (pid $pid); see $logfile" >&2
+    return 1
+end
+
+function __my_pi_jflow_stop --argument-names port
+    set -l listening (__my_pi_listener $port)
+    if test -z "$listening"
+        echo "jflow mcp: not running"
+        return 0
+    end
+    kill -TERM $listening
+    echo "jflow mcp: stopped (pid $listening)"
+end
+
+switch "$argv[1]"
+    case ''
+    case restart
+        ghmcp stop
+        gomodproxy stop
+        jiramcp stop
+        command -q jflow; and __my_pi_jflow_stop $jflow_port
+        set -l busy 0
+        __my_pi_wait_free 8082 ghmcp; or set busy 1
+        __my_pi_wait_free 8083 gomodproxy; or set busy 1
+        __my_pi_wait_free 8084 jiramcp; or set busy 1
+        __my_pi_wait_free $jflow_port "jflow mcp"; or set busy 1
+        test $busy -eq 0; or exit 1
+    case '*'
+        echo "usage: my-pi-start [restart]" >&2
+        exit 2
+end
 
 set -l failed 0
 ghmcp start; or set failed 1
 gomodproxy start; or set failed 1
-
+jiramcp start; or set failed 1
 if command -q jflow
-    set -l port 8765
-    set -l logfile ~/.local/state/jflowmcp.log
-    if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
-        echo "jflow mcp: port $port already in use"
-    else
-        mkdir -p (path dirname $logfile)
-        # DEV-NOTE: stdin from /dev/null for the same reason as ghmcp: a background
-        # process with a tty stdin is stopped by SIGTTIN.
-        nohup jflow mcp --http 127.0.0.1:$port </dev/null >$logfile 2>&1 &
-        set -l pid $last_pid
-        disown
-        set -l up 0
-        for i in (seq 10)
-            if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
-                set up 1
-                break
-            end
-            kill -0 $pid 2>/dev/null; or break
-            command sleep 1
-        end
-        if test $up -eq 1
-            echo "jflow mcp: up on http://127.0.0.1:$port/ (log: $logfile)"
-        else
-            echo "jflow mcp: not listening; see $logfile" >&2
-            set failed 1
-        end
-    end
+    __my_pi_jflow_start $jflow_port $jflow_log; or set failed 1
+else
+    echo "jflow mcp: jflow not on PATH; not started"
 end
 
 exit $failed

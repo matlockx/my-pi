@@ -12,7 +12,7 @@ function ghmcp --description 'GitHub MCP (read-write) behind a token proxy on 12
     switch "$argv[1]"
         case '' start
             if test -n "$listening"
-                echo "ghmcp: port $port already in use (pid $listening)"
+                echo "ghmcp: already running on http://127.0.0.1:$port/mcp (pid $listening, log: $logfile)"
                 return 0
             end
             mkdir -p (path dirname $logfile)
@@ -26,17 +26,17 @@ function ghmcp --description 'GitHub MCP (read-write) behind a token proxy on 12
             disown
             for i in (seq 20)
                 if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
-                    echo "ghmcp: up on http://127.0.0.1:$port/mcp (log: $logfile)"
+                    echo "ghmcp: up on http://127.0.0.1:$port/mcp (pid $pid, log: $logfile)"
                     return 0
                 end
                 if not kill -0 $pid 2>/dev/null
-                    echo "ghmcp: proxy exited; see $logfile" >&2
+                    echo "ghmcp: proxy exited (pid $pid); see $logfile" >&2
                     return 1
                 end
                 # `command` bypasses a user-defined `sleep` function or alias.
                 command sleep 1
             end
-            echo "ghmcp: not listening after 20 s; see $logfile" >&2
+            echo "ghmcp: not listening after 20 s (pid $pid); see $logfile" >&2
             return 1
         case stop
             if test -z "$listening"

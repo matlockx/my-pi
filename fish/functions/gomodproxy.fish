@@ -13,7 +13,7 @@ function gomodproxy --description 'Go module proxy on 127.0.0.1:8083 (GOPRIVATE 
     switch "$argv[1]"
         case '' start
             if test -n "$listening"
-                echo "gomodproxy: port $port already in use (pid $listening)"
+                echo "gomodproxy: already running on http://127.0.0.1:$port (pid $listening, log: $logfile)"
                 return 0
             end
             set -l goprivate
@@ -30,16 +30,16 @@ function gomodproxy --description 'Go module proxy on 127.0.0.1:8083 (GOPRIVATE 
             disown
             for i in (seq 10)
                 if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1
-                    echo "gomodproxy: up on http://127.0.0.1:$port (log: $logfile)"
+                    echo "gomodproxy: up on http://127.0.0.1:$port (pid $pid, log: $logfile)"
                     return 0
                 end
                 if not kill -0 $pid 2>/dev/null
-                    echo "gomodproxy: exited; see $logfile" >&2
+                    echo "gomodproxy: exited (pid $pid); see $logfile" >&2
                     return 1
                 end
                 command sleep 1
             end
-            echo "gomodproxy: not listening after 10 s; see $logfile" >&2
+            echo "gomodproxy: not listening after 10 s (pid $pid); see $logfile" >&2
             return 1
         case stop
             if test -z "$listening"

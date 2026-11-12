@@ -61,7 +61,7 @@ function __my_pi_node_ok
 end
 
 set -l formulae
-for tool in gh github-mcp-server jq
+for tool in gh github-mcp-server jq uv
     command -q $tool; or set -a formulae $tool
 end
 __my_pi_node_ok; or set -a formulae node
@@ -96,10 +96,19 @@ else
     end
 end
 
+if command -q acli
+    set -l email (acli jira auth status 2>/dev/null | string match -rg '^\s*Email:\s*(\S+)')
+    if test -n "$email"; and not security find-generic-password -s jira-mcp -a $email >/dev/null 2>&1
+        echo "note: no Jira API token in the keychain, so jiramcp will not start; create one at https://id.atlassian.com/manage-profile/security/api-tokens, then: security add-generic-password -U -s jira-mcp -a $email -w"
+    end
+else
+    echo "note: acli not on PATH; jiramcp needs it for the Jira site and e-mail (https://developer.atlassian.com/cloud/acli/guides/install-macos/)"
+end
+
 mkdir -p ~/bin
 cp $repo/bin/my-pi-start ~/bin/my-pi-start
 chmod 755 ~/bin/my-pi-start
 fish_add_path ~/bin
 echo "installed ~/bin/my-pi-start"
 
-echo "done. Start the proxies now and after each login with my-pi-start, then run /mcp reconnect github in omp."
+echo "done. Start the proxies now and after each login with my-pi-start (my-pi-start restart restarts them all), then run /mcp reconnect github and /mcp reconnect jira in omp."

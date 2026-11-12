@@ -5,6 +5,11 @@
       "type": "http",
       "url": "http://127.0.0.1:8082/mcp",
       "timeout": 30000
+    },
+    "jira": {
+      "type": "http",
+      "url": "http://127.0.0.1:8084/mcp",
+      "timeout": 30000
     }
   }
 }
