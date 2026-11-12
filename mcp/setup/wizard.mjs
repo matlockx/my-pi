@@ -23,6 +23,9 @@ import { dirname, join } from "node:path";
 import readline from "node:readline/promises";
 
 export const TIERS = ["dev", "ppd", "prd"];
+/** Answer for a context or profile the agent must not use at all; stored in the tier file's skip list. */
+export const SKIP = "skip";
+const SKIP_WORDS = new Set([SKIP, "s", "none", "-", "x"]);
 const HOME = os.homedir();
 const USER_MCP = join(HOME, ".omp/agent/mcp.json");
 const TIERS_FILE = join(HOME, ".config/mcpguard/tiers.json");
@@ -42,14 +45,22 @@ export function guessTier(name) {
 	return "prd";
 }
 
-/** Tier of name in section ({ dev, ppd, prd } name lists of a tiers file); undefined when not listed. */
+/** Tier or SKIP named by name in section ({ dev, ppd, prd, skip } name lists of a tiers file); undefined when not listed. */
 export function knownTier(section, name) {
-	return TIERS.find((tier) => Array.isArray(section?.[tier]) && section[tier].includes(name));
+	return [...TIERS, SKIP].find((tier) => Array.isArray(section?.[tier]) && section[tier].includes(name));
 }
 
-/** { dev, ppd, prd } name lists from a map of name to tier. */
+/** Tier or SKIP for a typed answer (case-insensitive; skip, s, none, - and x mean SKIP); def for an empty answer; undefined otherwise. */
+export function parseTierAnswer(answer, def) {
+	const a = answer.trim().toLowerCase();
+	if (a === "") return def;
+	if (TIERS.includes(a)) return a;
+	return SKIP_WORDS.has(a) ? SKIP : undefined;
+}
+
+/** { dev, ppd, prd, skip } name lists from a map of name to tier or SKIP. */
 export function groupByTier(answers) {
-	const out = { dev: [], ppd: [], prd: [] };
+	const out = { dev: [], ppd: [], prd: [], [SKIP]: [] };
 	for (const [name, tier] of Object.entries(answers)) out[tier].push(name);
 	return out;
 }
@@ -109,13 +120,12 @@ async function confirm(rl, question, def) {
 	}
 }
 
-/** Asks for one of a few short choices; an empty answer is def. */
-async function choose(rl, question, choices, def) {
+/** Asks for a tier or SKIP; an empty answer is def. */
+async function chooseTier(rl, question, def) {
 	for (;;) {
-		const answer = (await rl.question(`${question} [${choices.join("/")}] (${def}) `)).trim();
-		if (answer === "") return def;
-		if (choices.includes(answer)) return answer;
-		console.log(`    answer one of ${choices.join(", ")}, or Enter for ${def}`);
+		const tier = parseTierAnswer(await rl.question(`${question} [${TIERS.join("/")}/${SKIP}] (${def}) `), def);
+		if (tier) return tier;
+		console.log(`    answer one of ${TIERS.join(", ")}, ${SKIP} (the agent cannot use it), or Enter for ${def}`);
 	}
 }
 
@@ -223,14 +233,16 @@ function profileAccount(profile) {
 async function askTiers(rl, names, section, label = () => "") {
 	const answers = {};
 	for (const name of names)
-		answers[name] = await choose(rl, `    ${name}${label(name)}`, TIERS, knownTier(section, name) ?? guessTier(name));
+		answers[name] = await chooseTier(rl, `    ${name}${label(name)}`, knownTier(section, name) ?? guessTier(name));
 	return answers;
 }
 
 async function tiersStep(rl) {
 	if (!(await confirm(rl, `Write the tier map for the Kubernetes and AWS MCP servers (${TIERS_FILE})?`, true))) return;
 	const existing = readJson(TIERS_FILE, {});
-	console.log("  Tiers: dev, ppd or prd. Anything not listed counts as prd; vcluster_* contexts are the vcluster tier.");
+	console.log(
+		`  Tiers: dev, ppd or prd; ${SKIP} means the agent cannot use it. Anything not listed counts as prd; vcluster_* contexts are the vcluster tier.`,
+	);
 
 	const contexts = kubeContexts(KUBE_DIR);
 	if (contexts.length === 0) console.log(`  no contexts in ${KUBE_DIR}/*.yaml (or kubectl missing); Kubernetes tiers kept`);
@@ -245,10 +257,11 @@ async function tiersStep(rl) {
 		return account ? ` (account ${account})` : "";
 	});
 	let awsDefault = existing.aws?.default;
-	if (profiles.length > 0) {
-		const fallback = profiles.includes(awsDefault) ? awsDefault : (profiles.find((p) => aws[p] === "dev") ?? profiles[0]);
-		awsDefault = await select(rl, "  Default AWS profile (commands without --profile):", profiles, fallback);
-	}
+	const usable = profiles.filter((p) => aws[p] !== SKIP);
+	if (usable.length > 0) {
+		const fallback = usable.includes(awsDefault) ? awsDefault : (usable.find((p) => aws[p] === "dev") ?? usable[0]);
+		awsDefault = await select(rl, "  Default AWS profile (commands without --profile):", usable, fallback);
+	} else if (profiles.length > 0) awsDefault = undefined;
 
 	let vcluster = existing.vcluster;
 	const hosts = contexts.filter((c) => kube[c.context] === "dev");

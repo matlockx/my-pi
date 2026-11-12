@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { accountOf, groupByTier, guessTier, knownTier, readJson, withDisabled, writeJson } from "./wizard.mjs";
+import { accountOf, groupByTier, guessTier, knownTier, parseTierAnswer, readJson, withDisabled, writeJson } from "./wizard.mjs";
 
 test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to prd", () => {
 	assert.equal(guessTier("arn:aws:eks:eu-central-1:430896782353:cluster/intl-dev-stardust-cluster"), "dev");
@@ -18,16 +18,17 @@ test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to 
 });
 
 test("knownTier finds the stored tier and ignores malformed sections", () => {
-	const section = { dev: ["a"], prd: ["b"], ppd: "not-a-list" };
+	const section = { dev: ["a"], prd: ["b"], ppd: "not-a-list", skip: ["c"] };
 	assert.equal(knownTier(section, "a"), "dev");
+	assert.equal(knownTier(section, "c"), "skip", "a skipped name stays skipped on the next run");
 	assert.equal(knownTier(section, "b"), "prd");
 	assert.equal(knownTier(section, "not-a-list"), undefined);
 	assert.equal(knownTier(undefined, "a"), undefined);
 });
 
-test("groupByTier always returns all three lists", () => {
-	assert.deepEqual(groupByTier({ a: "dev", b: "prd", c: "dev" }), { dev: ["a", "c"], ppd: [], prd: ["b"] });
-	assert.deepEqual(groupByTier({}), { dev: [], ppd: [], prd: [] });
+test("groupByTier always returns every list, skip included", () => {
+	assert.deepEqual(groupByTier({ a: "dev", b: "prd", c: "dev", d: "skip" }), { dev: ["a", "c"], ppd: [], prd: ["b"], skip: ["d"] });
+	assert.deepEqual(groupByTier({}), { dev: [], ppd: [], prd: [], skip: [] });
 });
 
 test("withDisabled adds and removes a server, keeps other keys, drops an empty list", () => {
@@ -60,4 +61,12 @@ test("accountOf prefers sso_account_id, falls back to the role ARN, and rejects 
 	assert.equal(accountOf("", "arn:aws-us-gov:iam::123456789012:role/r"), "123456789012");
 	assert.equal(accountOf("not-an-id", "arn:aws:sts::430896782353:assumed-role/x"), undefined, "no iam ARN");
 	assert.equal(accountOf(undefined, undefined), undefined, "static or MFA session keys name no account");
+});
+
+test("parseTierAnswer: tiers, skip words, default on Enter, undefined for anything else", () => {
+	assert.equal(parseTierAnswer(" PRD ", "dev"), "prd");
+	for (const word of ["skip", "s", "none", "-", "x", "Skip"]) assert.equal(parseTierAnswer(word, "dev"), "skip", word);
+	assert.equal(parseTierAnswer("", "ppd"), "ppd");
+	assert.equal(parseTierAnswer("test", "ppd"), undefined, "a profile name is no tier");
+	assert.equal(parseTierAnswer("n", "ppd"), undefined, "n is not taken as skip");
 });
