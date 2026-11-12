@@ -119,4 +119,44 @@ assert.equal(
 	undefined,
 );
 
+// gh: irreversible or MCP-confirmed commands, API writes and token reads
+for (const command of [
+	"gh repo delete org/x --yes",
+	"gh repo archive org/x",
+	"gh repo create org/new --private",
+	"gh repo fork org/x",
+	"gh repo edit org/x --visibility public --accept-visibility-change-consequences",
+	"gh pr merge 12 --squash",
+	"gh issue delete 3 --yes",
+	"gh issue transfer 3 org/other",
+	"gh release delete-asset v1 a.zip",
+	"gh project item-delete 1 --id X",
+	"gh workflow run deploy.yml",
+	"gh run rerun 99",
+	"/opt/homebrew/bin/gh secret delete TOKEN",
+	"g''h label delete bug",
+	"gh api -X DELETE repos/org/x",
+	"gh api --method=PUT repos/org/x/pulls/1/merge",
+	"gh api repos/org/x/dispatches -f event_type=go",
+	"gh api graphql -f query='mutation { deleteIssue(input: {issueId: \"I\"}) { clientMutationId } }'",
+	"gh auth token",
+	"gh auth status --show-token",
+]) {
+	assert.ok(checkToolCall("bash", { command }), `should block ${command}`);
+}
+assert.ok(checkToolCall("eval", { code: 'subprocess.run(["gh", "pr", "merge", "12"])' }));
+for (const command of [
+	"gh pr view 12 --json mergeable,title",
+	"gh pr list --state merged",
+	"gh issue create --title 'delete stale cache'",
+	"gh run view 99",
+	"gh repo edit org/x --description new",
+	"gh api repos/org/x/pulls",
+	"gh api -X GET search/issues -f q=bug",
+	"gh api graphql -f query='query { viewer { login } }'",
+	"gh auth status",
+]) {
+	assert.equal(checkToolCall("bash", { command }), undefined, `should allow ${command}`);
+}
+
 console.log("fileguard: all checks passed");

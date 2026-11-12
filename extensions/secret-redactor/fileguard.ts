@@ -1,6 +1,7 @@
 /**
  * fileguard — hard-block reads of secret-bearing files (.env, *.tfvars, ...),
- * keychain reads that print a secret, and irreversible acli commands.
+ * keychain and gh token reads that print a secret, and irreversible acli and gh
+ * commands.
  *
  * Redaction is a net; this is a wall. Redaction still runs for anything that
  * slips past (e.g. `docker compose config` printing env values).
@@ -50,6 +51,9 @@ const KEYCHAIN_REASON =
 	"Blocked: this command prints a keychain secret into the tool trace, which is shown and logged unredacted. " +
 	"Do not load secrets into the agent shell. Ask the user to run the command in their own terminal.";
 
+// gh commands that print the stored GitHub token.
+const GH_TOKEN_READ = /\bgh[\s,]+auth[\s,]+(?:token\b|status\b[^;&|]*?[\s,](?:-t|--show-token)\b)/;
+
 // acli commands that cannot be undone, or that hand Jira access to another agent
 // (rovodev). Matched after quotes and backslashes are removed, so `ac''li`,
 // `"acli", "jira", ...` argv lists and `bash -c "acli ..."` read as plain words.
@@ -58,9 +62,34 @@ const KEYCHAIN_REASON =
 const ACLI_DESTRUCTIVE =
 	/\bacli(?:[\s,]+[a-z][a-z-]*)*?[\s,]+(?:delete|archive|remove|deactivate|change-owner|rovodev)\b/;
 
-const ACLI_REASON =
-	"Blocked: this acli command makes an irreversible Atlassian change outside the MCP guard, so the user is never asked. " +
-	"Use the jira MCP tool instead (it asks the user first), or ask the user to run the command in their own terminal.";
+// gh commands that cannot be undone, or that the GitHub MCP guard confirms first
+// (delete_file, merge_pull_request, actions_run_trigger, create_repository,
+// fork_repository), plus changing a repository's visibility. Same word-chain
+// matching as ACLI_DESTRUCTIVE; `*-delete` verbs cover delete-asset and item-delete.
+const GH_DESTRUCTIVE =
+	/\bgh(?:[\s,]+[a-z][a-z-]*)*?[\s,]+(?:(?:[a-z]+-)?delete(?:-[a-z]+)?|merge|archive|transfer|repo[\s,]+(?:create|fork)|workflow[\s,]+run|run[\s,]+(?:rerun|cancel))\b|\bgh[\s,]+repo[\s,]+edit\b[^;&|]*?--visibility\b/;
+
+/**
+ * True when a `gh api` call in quote-stripped command text writes: a GraphQL
+ * mutation, an explicit method other than GET, or a field or input flag, which
+ * makes gh send a POST.
+ */
+function ghApiWrites(bare: string): boolean {
+	for (const [, args] of bare.matchAll(/\bgh[\s,]+api\b([^;&|]*)/g)) {
+		if (/\bgraphql\b/.test(args)) {
+			if (/\bmutation\b/.test(args)) return true;
+			continue;
+		}
+		const method = /(?:^|[\s,])(?:-X|--method)[\s,=]*([A-Za-z]+)/.exec(args)?.[1];
+		if (method ? method.toUpperCase() !== "GET" : /[\s,](?:-f|-F|--field|--raw-field|--input)\b/.test(args))
+			return true;
+	}
+	return false;
+}
+
+const BYPASS_REASON = (cli: string, server: string) =>
+	`Blocked: this ${cli} command makes an irreversible change outside the MCP guard, so the user is never asked. ` +
+	`Use the ${server} MCP tool instead (it asks the user first), or ask the user to run the command in their own terminal.`;
 
 const REASON = (what: string) =>
 	`Blocked: ${what} is a secret-bearing file. Do not read it. ` +
@@ -82,8 +111,10 @@ export function checkToolCall(
 		// eval code cannot split the command from its flag or verb; a newline-separated later
 		// command may then match too, which errs on the side of blocking.
 		const joined = text.replace(/\\?\n/g, " ");
-		if (KEYCHAIN_READ.test(joined)) return KEYCHAIN_REASON;
-		if (ACLI_DESTRUCTIVE.test(joined.replace(/["'`\\]/g, ""))) return ACLI_REASON;
+		const bare = joined.replace(/["'`\\]/g, "");
+		if (KEYCHAIN_READ.test(joined) || GH_TOKEN_READ.test(bare)) return KEYCHAIN_REASON;
+		if (ACLI_DESTRUCTIVE.test(bare)) return BYPASS_REASON("acli", "jira");
+		if (GH_DESTRUCTIVE.test(bare) || ghApiWrites(bare)) return BYPASS_REASON("gh", "github");
 		const hits = secretPathsInCommand(text);
 		return hits.length ? REASON(hits[0]) : undefined;
 	}
