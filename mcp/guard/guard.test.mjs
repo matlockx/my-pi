@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { allowedHost, createGuard, MAX_BODY_BYTES } from "./guard.mjs";
+import { allowedHost, createGuard, MAX_BODY_BYTES, SESSION_IDLE_MS } from "./guard.mjs";
 
 const AUTH = "Bearer guard-held";
 
@@ -237,4 +237,136 @@ test("a deny verdict refuses the whole request without a dialog and forwards not
 		/^Blocked by the MCP guard \(context x is skipped in tiers\.json\): the guard's configuration refuses it without asking\./,
 	);
 	assert.deepEqual(logged.map((r) => r.decision), ["refused", "refused"]);
+});
+
+/**
+ * Starts a guard with sessions whose policy confirms read_db with session: true and write_db without;
+ * the dialog answers from answers in order; the clock is clock.now. Forwarded requests answer {"ok":true}.
+ */
+async function startSessionGuard(t, answers, clock = { now: 0 }) {
+	const offers = [];
+	const logged = [];
+	let forwarded = 0;
+	const guard = createGuard({
+		server: "db",
+		allowlistFile: tempAllowlist(t),
+		sessions: true,
+		now: () => clock.now,
+		classifyCall: (_server, tool) =>
+			tool === "read_db"
+				? { decision: "confirm", reasons: ["reads"], allowlist: {}, session: true }
+				: { decision: "confirm", reasons: ["writes"], allowlist: {} },
+		forward: (req, res) => {
+			forwarded++;
+			req.resume();
+			res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+		},
+		confirm: async (_text, { always }) => {
+			offers.push(always);
+			return answers.shift() ?? "deny";
+		},
+		log: (record) => logged.push(record),
+	});
+	guard.listen(0, "127.0.0.1");
+	await once(guard, "listening");
+	t.after(() => guard.close());
+	return { port: guard.address().port, offers, logged, forwarded: () => forwarded };
+}
+
+/** Sends method with body and headers to the guard; resolves status, headers and text. */
+function send(port, method, body, headers = {}) {
+	return new Promise((resolve, reject) => {
+		const req = http.request(
+			{ host: "127.0.0.1", port, method, path: "/mcp", headers: { "content-type": "application/json", ...headers } },
+			(res) => {
+				let text = "";
+				res.setEncoding("utf8");
+				res.on("data", (chunk) => (text += chunk));
+				res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+			},
+		);
+		req.on("error", reject);
+		req.end(body);
+	});
+}
+
+const INIT = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+const READ = JSON.stringify(call(2, "read_db", { query: "SELECT 1" }));
+const WRITE = JSON.stringify(call(3, "write_db", { query: "UPDATE t SET a = 1" }));
+
+/** Opens a session on the guard at port and returns its id. */
+async function open(port) {
+	const res = await send(port, "POST", INIT);
+	assert.match(res.headers["mcp-session-id"] ?? "", /^[0-9a-f-]{36}$/);
+	return res.headers["mcp-session-id"];
+}
+
+test("a guard without sessions issues no session id", async (t) => {
+	const up = await startUpstream(t);
+	const { port } = await startGuard(t, up.port, "allow");
+
+	const res = await send(port, "POST", INIT);
+
+	assert.equal(res.headers["mcp-session-id"], undefined);
+});
+
+test("allow for this session passes that session's later calls of the tool without a dialog", async (t) => {
+	const g = await startSessionGuard(t, ["always"]);
+	const sid = await open(g.port);
+
+	await send(g.port, "POST", READ, { "mcp-session-id": sid });
+	const again = await send(g.port, "POST", READ, { "mcp-session-id": sid });
+
+	assert.equal(again.text, '{"ok":true}');
+	assert.deepEqual(g.offers, ["Allow for this session"]);
+	assert.equal(g.forwarded(), 3);
+	assert.deepEqual(
+		g.logged.filter((r) => r.tool).map((r) => r.decision),
+		["approved", "session"],
+	);
+	assert.deepEqual(g.logged.find((r) => r.sessionApproved)?.sessionApproved, ["read_db"]);
+});
+
+test("another session, no session id or an unknown one is asked again and offered no carried approval", async (t) => {
+	const g = await startSessionGuard(t, ["always", "deny", "deny", "deny"]);
+	const first = await open(g.port);
+	const second = await open(g.port);
+	await send(g.port, "POST", READ, { "mcp-session-id": first });
+
+	const other = await send(g.port, "POST", READ, { "mcp-session-id": second });
+	const none = await send(g.port, "POST", READ);
+	const forged = await send(g.port, "POST", READ, { "mcp-session-id": "00000000-0000-0000-0000-000000000000" });
+
+	for (const res of [other, none, forged]) assert.match(res.text, /Blocked by the MCP guard/);
+	// The second session is a known one, so it may approve for itself; the other two get no session button.
+	assert.deepEqual(g.offers, ["Allow for this session", "Allow for this session", undefined, undefined]);
+});
+
+test("a call the policy does not mark session gets no session button, and always does not approve it", async (t) => {
+	const g = await startSessionGuard(t, ["always"]);
+	const sid = await open(g.port);
+
+	const res = await send(g.port, "POST", JSON.stringify([JSON.parse(READ), JSON.parse(WRITE)]), { "mcp-session-id": sid });
+
+	assert.deepEqual(g.offers, [undefined]);
+	assert.match(res.text, /Blocked by the MCP guard \(reads; writes\)/);
+	assert.equal(g.forwarded(), 1);
+});
+
+test("DELETE and idle time end a session and its approvals", async (t) => {
+	const clock = { now: 0 };
+	const g = await startSessionGuard(t, ["always", "always", "deny", "deny"], clock);
+	const ended = await open(g.port);
+	const idle = await open(g.port);
+	await send(g.port, "POST", READ, { "mcp-session-id": ended });
+	await send(g.port, "POST", READ, { "mcp-session-id": idle });
+
+	const del = await send(g.port, "DELETE", "", { "mcp-session-id": ended });
+	clock.now = SESSION_IDLE_MS + 1;
+	const afterDelete = await send(g.port, "POST", READ, { "mcp-session-id": ended });
+	const afterIdle = await send(g.port, "POST", READ, { "mcp-session-id": idle });
+
+	assert.equal(del.status, 204);
+	for (const res of [afterDelete, afterIdle]) assert.match(res.text, /Blocked by the MCP guard/);
+	assert.deepEqual(g.offers.slice(2), [undefined, undefined]);
 });

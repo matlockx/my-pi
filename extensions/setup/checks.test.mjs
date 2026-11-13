@@ -131,7 +131,7 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 		portOpen: async () => false,
 	});
 
-	assert.equal(actions.length, 9);
+	assert.equal(actions.length, 10);
 	assert.equal(actions[0], "github-mcp-server not on PATH: brew install github-mcp-server");
 	assert.match(actions[1], /^node v24\.1\.9 is older than 24\.2 /);
 	assert.match(actions[2], /defines "github", which outranks my-pi\/mcp\.json: jq 'del\(\.mcpServers\.github\)' .* && chmod 600 .* && mv /);
@@ -140,9 +140,15 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 	assert.match(actions[5], /^Jira MCP not listening on 127\.0\.0\.1:8084: run my-pi-start in a host terminal, then \/mcp reconnect jira$/);
 	assert.deepEqual(
 		actions.slice(6).map((a) => a.split(":")[0]),
-		["Kubernetes MCP not listening on 127.0.0.1", "AWS MCP not listening on 127.0.0.1", "vcluster MCP not listening on 127.0.0.1"],
+		[
+			"Kubernetes MCP not listening on 127.0.0.1",
+			"AWS MCP not listening on 127.0.0.1",
+			"vcluster MCP not listening on 127.0.0.1",
+			"lifepace production MCP not listening on 127.0.0.1",
+		],
 	);
 	assert.match(actions[8], /:8087: run my-pi-start in a host terminal, then \/mcp reconnect vcluster \(or turn it off in the setup wizard\)$/);
+	assert.match(actions[9], /:8088: run my-pi-start in a host terminal, then \/mcp reconnect lifepace /);
 
 	const onlyJiraDown = await runChecks({ repo, home, ...healthy, portOpen: async (port) => port !== 8084 });
 	assert.equal(onlyJiraDown.actions.length, 2, "github entry in user mcp.json plus the Jira MCP");
@@ -158,7 +164,7 @@ test("reports missing github-mcp-server, old or missing node, stale user github 
 
 test("skips the checks of every MCP server in disabledServers", async (t) => {
 	const { repo, home } = fixture(t);
-	fs.writeFileSync(join(home, ".omp/agent/mcp.json"), JSON.stringify({ disabledServers: ["github", "jira", "kube", "aws", "vcluster"] }));
+	fs.writeFileSync(join(home, ".omp/agent/mcp.json"), JSON.stringify({ disabledServers: ["github", "jira", "kube", "aws", "vcluster", "lifepace"] }));
 	const allDown = { run: async (cmd) => ({ node: "v26.7.0", go: SANDBOX_GOPROXY })[cmd] ?? null, portOpen: async () => false };
 
 	const { actions } = await runChecks({ repo, home, ...allDown });

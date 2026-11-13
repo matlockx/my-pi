@@ -6,8 +6,11 @@
 # the MCP guard (my-pi/mcp/guard), their real servers on 18082, 18084 and
 # 18765. The Kubernetes (kubemcp, 127.0.0.1:8085), AWS (awsmcp, 8086) and
 # vcluster (vclustermcp, 8087) MCP servers run as stdio children of their
-# guard and have no port of their own. usagesync (hourly usage collection, my-pi/extensions/usage)
-# has no port either; it is tracked by its pid file. A server already listening is left alone. Servers listed in
+# guard and have no port of their own, as does the lifepace production MCP
+# (lifepacemcp, 8088), which holds the only ssh path to the lifepace server.
+# usagesync (hourly usage collection, my-pi/extensions/usage) has no port
+# either; it is tracked by its pid file. A server already listening is left
+# alone. Servers listed in
 # disabledServers of ~/.omp/agent/mcp.json (set by the MCP setup wizard,
 # my-pi/mcp/setup/wizard.mjs) are not started.
 #
@@ -94,6 +97,7 @@ switch "$argv[1]"
         __my_pi_port_stop kubemcp 8085
         __my_pi_port_stop awsmcp 8086
         __my_pi_port_stop vclustermcp 8087
+        __my_pi_port_stop lifepacemcp 8088
         usagesync stop
         set -l busy 0
         # Upstream ports too: a guard frees its own port before its server child exits.
@@ -107,6 +111,7 @@ switch "$argv[1]"
         __my_pi_wait_free 8085 kubemcp; or set busy 1
         __my_pi_wait_free 8086 awsmcp; or set busy 1
         __my_pi_wait_free 8087 vclustermcp; or set busy 1
+        __my_pi_wait_free 8088 lifepacemcp; or set busy 1
         test $busy -eq 0; or exit 1
     case '*'
         echo "usage: my-pi-start [restart]" >&2
@@ -158,6 +163,15 @@ else if command -q vcluster; and command -q kubectl
     __my_pi_guard_start vclustermcp 8087 vcluster/guard.mjs ~/.local/state/vclustermcp.log 20; or set failed 1
 else
     echo "vclustermcp: vcluster or kubectl not on PATH (brew install loft-sh/tap/vcluster kubectl); not started"
+end
+# lifepace production: needs the lifepace checkout (LIFEPACE_REPO, default ~/projects/lifepace).
+set -l lifepace_repo (set -q LIFEPACE_REPO; and echo $LIFEPACE_REPO; or echo ~/projects/lifepace)
+if contains lifepace $disabled
+    echo "lifepacemcp: $off"
+else if test -x $lifepace_repo/deploy/prod-sql.sh
+    __my_pi_guard_start lifepacemcp 8088 lifepace/guard.mjs ~/.local/state/lifepacemcp.log 20; or set failed 1
+else
+    echo "lifepacemcp: no $lifepace_repo/deploy/prod-sql.sh (set LIFEPACE_REPO); not started"
 end
 usagesync start; or set failed 1
 

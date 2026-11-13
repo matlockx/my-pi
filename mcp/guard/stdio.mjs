@@ -12,8 +12,9 @@
  * Server notifications are dropped. Server requests are answered by the
  * bridge: ping with an empty result, anything else (elicitation, roots,
  * sampling) with a method-not-found error, since the guard is the only party
- * that confirms anything. Answers are plain application/json; no session id is
- * issued, and GET and DELETE get 405.
+ * that confirms anything. Answers are plain application/json; the bridge
+ * issues no session id (a guard created with sessions issues its own,
+ * guard.mjs), and GET and DELETE get 405 unless the guard answers them.
  *
  * DEV-NOTE: see my-pi notes/specs/2026-11-12-kube-aws-vcluster-mcp.md (Phase 1).
  */

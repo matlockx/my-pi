@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { createTools, handle, listEntries, runCommand, TOOLS } from "./server.mjs";
+import { createTools, listEntries, runCommand } from "./server.mjs";
 
 const HOST = { kubeconfig: "/host/kubeconfig.yaml", context: "dev-host" };
 const LIST = JSON.stringify([
@@ -108,16 +108,4 @@ test("vcluster_connect refuses bad names, missing and stopped vclusters, and a m
 	await assert.rejects(tools.vcluster_connect({ name: "alex" }), /vcluster alex is Paused, not Running/);
 	const noHost = createTools({ run: async () => "[]", host: undefined, workdir: "/nonexistent" });
 	await assert.rejects(noHost.vcluster_list(), /no vcluster host cluster in ~\/\.config\/mcpguard\/tiers\.json/);
-});
-
-test("handle answers initialize, tools/list and tools/call; tool errors become isError results", async () => {
-	const tools = { vcluster_list: async () => ({ vclusters: [] }), vcluster_connect: async () => { throw new Error("boom"); } };
-	assert.equal((await handle(tools, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} })).result.serverInfo.name, "vcluster");
-	assert.deepEqual((await handle(tools, { jsonrpc: "2.0", id: 2, method: "tools/list" })).result.tools, TOOLS);
-	const ok = await handle(tools, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vcluster_list" } });
-	assert.deepEqual(JSON.parse(ok.result.content[0].text), { vclusters: [] });
-	const err = await handle(tools, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "vcluster_connect", arguments: { name: "x" } } });
-	assert.deepEqual(err.result, { content: [{ type: "text", text: "boom" }], isError: true });
-	assert.equal((await handle(tools, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "nope" } })).error.code, -32602);
-	assert.equal(await handle(tools, { jsonrpc: "2.0", method: "notifications/initialized" }), null);
 });

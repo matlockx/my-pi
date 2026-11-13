@@ -20,15 +20,13 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import readline from "node:readline";
 
+import { serveStdin } from "../guard/toolserver.mjs";
 import { KUBE_DIR, VCLUSTER_FILE } from "../kube/guard.mjs";
 import { loadTiers } from "../guard/tiers.mjs";
 
-const PROTOCOL_VERSION = "2025-06-18";
 const SERVER_INFO = { name: "vcluster", version: "1" };
 const RUN_TIMEOUT_MS = 60_000;
-const ERROR_TEXT_CHARS = 1_000;
 /** Kubernetes DNS label: the shape of a vcluster name. */
 const NAME = /^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
 export const CONTEXT_PREFIX = "vcluster_";
@@ -144,44 +142,9 @@ export function createTools({ run = runCommand, host, kubeDir = KUBE_DIR, workdi
 	};
 }
 
-/** Answer to one JSON-RPC message (null for notifications and responses). */
-export async function handle(tools, msg) {
-	if (msg?.id === undefined || typeof msg.method !== "string") return null;
-	const ok = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
-	switch (msg.method) {
-		case "initialize":
-			return ok({ protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO });
-		case "ping":
-			return ok({});
-		case "tools/list":
-			return ok({ tools: TOOLS });
-		case "tools/call": {
-			const tool = tools[msg.params?.name];
-			if (!tool) return { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown tool ${msg.params?.name}` } };
-			try {
-				const result = await tool(msg.params?.arguments ?? {});
-				return ok({ content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
-			} catch (err) {
-				return ok({ content: [{ type: "text", text: err.message.slice(0, ERROR_TEXT_CHARS) }], isError: true });
-			}
-		}
-		default:
-			return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `method ${msg.method} not found` } };
-	}
-}
-
 function main() {
-	const tools = createTools({ host: loadTiers().vcluster, workdir: join(os.homedir(), ".local/state/vclustermcp") });
-	readline.createInterface({ input: process.stdin }).on("line", async (line) => {
-		let msg;
-		try {
-			msg = JSON.parse(line);
-		} catch {
-			return;
-		}
-		const answer = await handle(tools, msg);
-		if (answer) process.stdout.write(`${JSON.stringify(answer)}\n`);
-	});
+	const handlers = createTools({ host: loadTiers().vcluster, workdir: join(os.homedir(), ".local/state/vclustermcp") });
+	serveStdin({ tools: TOOLS, handlers, serverInfo: SERVER_INFO });
 }
 
 if (import.meta.main) main();

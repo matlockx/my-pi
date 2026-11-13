@@ -23,6 +23,7 @@ export const GUARDED_MCP = [
 	{ name: "kube", port: 8085, label: "Kubernetes MCP" },
 	{ name: "aws", port: 8086, label: "AWS MCP" },
 	{ name: "vcluster", port: 8087, label: "vcluster MCP" },
+	{ name: "lifepace", port: 8088, label: "lifepace production MCP" },
 ];
 
 /**

@@ -16,11 +16,20 @@
  * Jira project), the dialog also offers "Always allow"; that answer adds the
  * entries to ALLOWLIST_FILE, which extends the policy at every start.
  *
+ * A guard created with sessions answers initialize with its own
+ * Mcp-Session-Id. When every remaining finding of a request is one the policy
+ * marks session (verdict field session: true) and the request carries a
+ * session id the guard issued, the dialog offers "Allow for this session"
+ * instead; that answer approves those tools for that session only, in
+ * memory: until the client sends DELETE, SESSION_IDLE_MS pass without a
+ * request, or the guard stops. Nothing of it is written to disk.
+ *
  * Every tools/call is appended to AUDIT_LOG with server, tool, decision and
  * reasons; arguments are never logged.
  */
 
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -39,6 +48,11 @@ export const ALLOWLIST_FILE = join(os.homedir(), ".config/mcpguard/allowlist.jso
 // Case the policy compares in: GitHub owners lower case, Jira project keys upper case.
 const ALLOWLIST_CASE = { owners: (v) => v.toLowerCase(), jiraProjects: (v) => v.toUpperCase() };
 const ARGS_PREVIEW_CHARS = 400;
+/** Idle time after which a session's approvals are dropped. */
+export const SESSION_IDLE_MS = 8 * 60 * 60 * 1000;
+/** Most sessions held at once; the least recently used one goes first. */
+const MAX_SESSIONS = 100;
+const SESSION_LABEL = "Allow for this session";
 // Hop-by-hop headers (RFC 9110 section 7.6.1) plus the two the guard sets itself.
 const DROP_REQUEST = new Set([
 	"connection",
@@ -207,9 +221,35 @@ function verdictsOf(g, parsed) {
 }
 
 /**
+ * The live session named by req's Mcp-Session-Id, its idle clock restarted;
+ * null when g has no sessions, or the id is missing, unknown or idle for
+ * longer than SESSION_IDLE_MS (then it is dropped).
+ */
+function sessionOf(g, req) {
+	const id = req.headers["mcp-session-id"];
+	const s = g.sessions && typeof id === "string" ? g.sessions.get(id) : undefined;
+	if (!s) return null;
+	// Taken out and put back last, so the Map stays in least recently used order.
+	g.sessions.delete(id);
+	if (g.now() - s.seen > SESSION_IDLE_MS) return null;
+	s.seen = g.now();
+	g.sessions.set(id, s);
+	return s;
+}
+
+/** Sets a new session id on res, remembered without approvals; past MAX_SESSIONS the least recently used one goes. */
+function openSession(g, res) {
+	const id = randomUUID();
+	g.sessions.set(id, { approved: new Set(), seen: g.now() });
+	while (g.sessions.size > MAX_SESSIONS) g.sessions.delete(g.sessions.keys().next().value);
+	res.setHeader("mcp-session-id", id);
+}
+
+/**
  * Reads and classifies a POST, then answers it with a denial when a call is
  * refused ("deny" verdict, no dialog), asks the user when a call needs
- * confirmation, and forwards it or answers with a denial.
+ * confirmation and the session has not approved it already, and forwards it
+ * or answers with a denial.
  */
 async function inspect(g, req, res) {
 	const body = await readBody(req, MAX_BODY_BYTES);
@@ -220,6 +260,7 @@ async function inspect(g, req, res) {
 	} catch {
 		return reply(res, 400, "request body is not JSON");
 	}
+	const session = sessionOf(g, req);
 	const verdicts = verdictsOf(g, parsed);
 	const refused = verdicts.filter((v) => v.decision === "deny");
 	if (refused.length > 0) {
@@ -228,14 +269,18 @@ async function inspect(g, req, res) {
 		const refusal = JSON.stringify(denial(parsed, refused.flatMap((v) => v.reasons), REFUSED));
 		return res.writeHead(200, { "content-type": "application/json" }).end(refusal);
 	}
-	const flagged = verdicts.filter((v) => v.decision === "confirm");
+	const confirmed = verdicts.filter((v) => v.decision === "confirm");
+	const fromSession = new Set(confirmed.filter((v) => v.session === true && session?.approved.has(v.tool)));
+	const flagged = confirmed.filter((v) => !fromSession.has(v));
 	const offer = flagged.length > 0 ? allowlistOffer(g, flagged) : null;
-	const always = offer ? `Always allow ${Object.values(offer).flat().join(", ")}` : undefined;
+	const sessionOffer = offer === null && session !== null && flagged.length > 0 && flagged.every((v) => v.session === true);
+	const always = offer ? `Always allow ${Object.values(offer).flat().join(", ")}` : sessionOffer ? SESSION_LABEL : undefined;
 	const answer = flagged.length === 0 ? "allow" : await g.confirm(dialogText(g.server, flagged), { always });
-	const approved = answer === "allow" || (answer === "always" && offer !== null);
+	const approved = answer === "allow" || (answer === "always" && (offer !== null || sessionOffer));
 	const outcome = approved ? "approved" : "denied";
-	for (const { tool, decision, reasons } of verdicts) {
-		g.log({ server: g.server, tool, decision: decision === "allow" ? "allow" : outcome, reasons });
+	for (const v of verdicts) {
+		const decision = v.decision === "allow" ? "allow" : fromSession.has(v) ? "session" : outcome;
+		g.log({ server: g.server, tool: v.tool, decision, reasons: v.reasons });
 	}
 	if (answer === "always" && offer) {
 		g.policy = extend(g.policy, offer);
@@ -247,12 +292,23 @@ async function inspect(g, req, res) {
 			console.error(`mcpguard ${g.server}: cannot save ${g.allowlistFile}: ${err.message}`);
 		}
 	}
-	if (approved) return g.forward(req, res, body);
-	const refusal = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons), DENIED_BY_USER));
-	res.writeHead(200, { "content-type": "application/json" }).end(refusal);
+	if (answer === "always" && sessionOffer) {
+		for (const v of flagged) session.approved.add(v.tool);
+		g.log({ server: g.server, sessionApproved: [...new Set(flagged.map((v) => v.tool))] });
+	}
+	if (!approved) {
+		const refusal = JSON.stringify(denial(parsed, flagged.flatMap((v) => v.reasons), DENIED_BY_USER));
+		return res.writeHead(200, { "content-type": "application/json" }).end(refusal);
+	}
+	if (g.sessions && (Array.isArray(parsed) ? parsed : [parsed]).some((m) => m?.method === "initialize")) openSession(g, res);
+	return g.forward(req, res, body);
 }
 
-/** Routes one request: Host check, extra routes, plain forwarding for non-POST, inspection for POST. */
+/**
+ * Routes one request: Host check, extra routes, the end of a session
+ * (DELETE, with sessions), plain forwarding for other non-POST, inspection
+ * for POST.
+ */
 function route(g, port, req, res) {
 	if (!allowedHost(req.headers.host, port)) {
 		reply(res, 403, "forbidden host");
@@ -260,6 +316,12 @@ function route(g, port, req, res) {
 		return;
 	}
 	if (g.extra(req, res)) return;
+	if (g.sessions && req.method === "DELETE") {
+		const id = req.headers["mcp-session-id"];
+		if (typeof id === "string") g.sessions.delete(id);
+		req.resume();
+		return res.writeHead(204).end();
+	}
 	if (req.method !== "POST") return g.forward(req, res);
 	inspect(g, req, res).catch((err) => {
 		// Fails closed: nothing is forwarded after an error in the inspection.
@@ -279,11 +341,15 @@ function route(g, port, req, res) {
  * and may answer a request itself by returning true. confirm(text, { always })
  * resolves "allow", "always" or "deny". classifyCall(server, tool, args,
  * policy) returns { decision: "allow" | "confirm" | "deny", reasons,
- * allowlist }; "deny" refuses the whole request without a dialog. confirm,
- * classifyCall and log default to the dialog, the policy and the audit log.
- * forward(req, res, body) delivers an approved request and answers res; body
- * is the read POST body and absent for other methods. It defaults to HTTP
- * forwarding to upstreamPort with authorization.
+ * allowlist, session? }; "deny" refuses the whole request without a dialog,
+ * and session: true marks a "confirm" the user may approve for the rest of
+ * the client's session. confirm, classifyCall and log default to the dialog,
+ * the policy and the audit log. forward(req, res, body) delivers an approved
+ * request and answers res; body is the read POST body and absent for other
+ * methods. It defaults to HTTP forwarding to upstreamPort with
+ * authorization. sessions turns on the guard's own session ids and session
+ * approvals; only for a forward that issues no session id itself (stdio.mjs).
+ * now is the clock in milliseconds.
  */
 export function createGuard({
 	server,
@@ -296,6 +362,8 @@ export function createGuard({
 	confirm = askUser,
 	classifyCall = classify,
 	log = auditLog,
+	sessions = false,
+	now = Date.now,
 }) {
 	const g = {
 		server,
@@ -307,6 +375,8 @@ export function createGuard({
 		confirm,
 		classifyCall,
 		log,
+		sessions: sessions ? new Map() : null,
+		now,
 	};
 	g.forward = forward ?? ((req, res, body) => forwardHttp(g, req, res, body));
 	const httpServer = http.createServer((req, res) => route(g, httpServer.address().port, req, res));

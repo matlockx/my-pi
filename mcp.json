@@ -25,6 +25,11 @@
       "type": "http",
       "url": "http://127.0.0.1:8087/mcp",
       "timeout": 120000
+    },
+    "lifepace": {
+      "type": "http",
+      "url": "http://127.0.0.1:8088/mcp",
+      "timeout": 120000
     }
   }
 }
