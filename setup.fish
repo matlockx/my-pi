@@ -14,8 +14,18 @@
 # Kubernetes/AWS tier map), clones the usage repository and writes its config
 # (extensions/usage), and copies the proxy starter to ~/bin/my-pi-start.
 # The proxies are not started; run my-pi-start after each login.
+#
+# A finished run stores a hash of this script, the wizard and my-pi-start; when
+# none changed since, the script asks before running again.
 
 set -l repo (path dirname (path resolve (status filename)))
+
+set -l stamp ~/.local/state/my-pi/setup.sha256
+set -l digest (cat $repo/setup.fish $repo/mcp/setup/wizard.mjs $repo/bin/my-pi-start | shasum -a 256 | string split -f1 ' ')
+if string match -q -- $digest (cat $stamp 2>/dev/null)
+    read -l -P "setup.fish, the MCP wizard and my-pi-start are unchanged since the last finished run. Run again anyway? [y/N] " answer
+    string match -qir '^y(es)?$' -- $answer; or exit 0
+end
 
 # Points link at source. A regular file in the way is kept as a timestamped
 # .bak; a link pointing elsewhere is replaced.
@@ -113,8 +123,8 @@ if test -d $usage_dir; and not test -f ~/.pi/usage/config.json
     echo "wrote ~/.pi/usage/config.json (repo $usage_dir)"
 end
 
-# Asks per MCP server (GitHub, Jira, jflow) and for the Kubernetes/AWS tiers; installs or
-# stores what each needs.
+# Asks per MCP server (GitHub, Jira, jflow, Kubernetes, AWS, vcluster, lifepace) and for the
+# Kubernetes/AWS tiers; installs or stores what each needs.
 node $repo/mcp/setup/wizard.mjs; or exit 1
 
 mkdir -p ~/bin
@@ -122,5 +132,8 @@ cp $repo/bin/my-pi-start ~/bin/my-pi-start
 chmod 755 ~/bin/my-pi-start
 fish_add_path ~/bin
 echo "installed ~/bin/my-pi-start"
+
+mkdir -p (path dirname $stamp)
+and echo $digest >$stamp
 
 echo "done. Start the proxies now and after each login with my-pi-start (my-pi-start restart restarts them all), then run /mcp reconnect github and /mcp reconnect jira in omp."

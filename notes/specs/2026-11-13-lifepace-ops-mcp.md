@@ -144,8 +144,9 @@ text fails, `--write` updates as the owner.
 
 Open on the host: `make deploy` in lifepace (creates `diag`), the rule check above, the nono rule and an
 omp restart, `my-pi-start restart`, `/mcp reconnect lifepace`, then an `UPDATE` through `prod_sql` must
-fail on the server too. The MCP setup wizard has no step for this server: `my-pi-start` starts it only where
-the lifepace checkout exists, and `disabledServers` turns it off.
+fail on the server too. The MCP setup wizard asks whether to use this server (a no puts it in
+`disabledServers`) and names a missing lifepace checkout; `my-pi-start` starts it only where that checkout
+exists.
 
 ## Alternatives not taken
 

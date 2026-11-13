@@ -5,8 +5,9 @@
  * Asks for each MCP server whether it is wanted and creates what that server
  * needs: GitHub (github-mcp-server), Jira (acli login, API token in the login
  * keychain), jflow (binary on PATH), Kubernetes (kubernetes-mcp-server), AWS
- * (uvx, aws) and vcluster (vcluster, kubectl), and the tier map
- * ~/.config/mcpguard/tiers.json for the Kubernetes, AWS and vcluster servers. Unwanted
+ * (uvx, aws), vcluster (vcluster, kubectl) and lifepace production (the
+ * lifepace checkout), and the tier map ~/.config/mcpguard/tiers.json for the
+ * Kubernetes, AWS and vcluster servers. Unwanted
  * servers are listed in disabledServers of ~/.omp/agent/mcp.json: omp does not
  * connect to them, my-pi-start does not start them, and the omp setup check does
  * not report them.
@@ -215,6 +216,14 @@ async function vclusterStep(rl, enabled) {
 	return true;
 }
 
+async function lifepaceStep(rl, enabled) {
+	if (!(await confirm(rl, "Use the lifepace production MCP (lifepace, 127.0.0.1:8088)?", enabled))) return false;
+	// Same default and check as my-pi-start and mcp/lifepace/server.mjs.
+	const repo = process.env.LIFEPACE_REPO || join(HOME, "projects/lifepace");
+	if (!fs.existsSync(join(repo, "deploy/prod-sql.sh"))) console.log(`  todo: no ${repo}/deploy/prod-sql.sh; clone lifepace there or set LIFEPACE_REPO`);
+	return true;
+}
+
 /** Contexts of the kubeconfig files in dir (vclusters.yaml excluded), first file wins per name as with KUBECONFIG. */
 function kubeContexts(dir) {
 	let files;
@@ -320,7 +329,7 @@ async function main() {
 		let next = mcp;
 		// DEV-NOTE: jflow is no omp MCP server (the jflow-mcp extension connects to it), so omp
 		// ignores that name; it sits in disabledServers so my-pi-start has one list to read.
-		const steps = { github: githubStep, jira: jiraStep, jflow: jflowStep, kube: kubeStep, aws: awsStep, vcluster: vclusterStep };
+		const steps = { github: githubStep, jira: jiraStep, jflow: jflowStep, kube: kubeStep, aws: awsStep, vcluster: vclusterStep, lifepace: lifepaceStep };
 		for (const [server, step] of Object.entries(steps)) next = withDisabled(next, server, !(await step(rl, !disabled.has(server))));
 		if (JSON.stringify(next) !== JSON.stringify(mcp)) {
 			// Mode 600: the file can hold other servers' credentials.
