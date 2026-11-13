@@ -10,9 +10,13 @@ import { createHash } from "node:crypto";
 import { COUNTERS, HOUR_MS, rowKey } from "./parse.mjs";
 import { durationOf, limitDelta, UNTRACKED_FACTOR, untrackedRatio } from "./report.mjs";
 
-export const KINDS = ["daily", "weekly", "monthly"];
+export const KINDS = ["daily", "weekly", "monthly", "yearly"];
+/** Kind of the one report over all data, always running; its file is `alltime/all.html`. */
+export const ALL_TIME = "alltime";
+/** Every report kind, in index order. */
+export const REPORT_KINDS = [...KINDS, ALL_TIME];
 /** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
-export const REPORT_VERSION = 2;
+export const REPORT_VERSION = 3;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -75,8 +79,8 @@ function isoWeek(y, m, d) {
 /**
  * The period of a kind that contains ms.
  *
- * @returns {{kind: string, key: string, start: number, end: number}} key: `2026-11-12`, `2026-W46`
- *   or `2026-11`; [start, end) in UTC ms.
+ * @returns {{kind: string, key: string, start: number, end: number}} key: `2026-11-12`, `2026-W46`,
+ *   `2026-11` or `2026`; [start, end) in UTC ms.
  */
 export function periodOf(kind, ms, tz) {
 	const p = localParts(ms, tz);
@@ -86,16 +90,29 @@ export function periodOf(kind, ms, tz) {
 		return { kind, key: isoWeek(p.y, p.m, monday), start: localMidnight(p.y, p.m, monday, tz), end: localMidnight(p.y, p.m, monday + 7, tz) };
 	}
 	if (kind === "monthly") return { kind, key: `${p.y}-${pad(p.m)}`, start: localMidnight(p.y, p.m, 1, tz), end: localMidnight(p.y, p.m + 1, 1, tz) };
+	if (kind === "yearly") return { kind, key: String(p.y), start: localMidnight(p.y, 1, 1, tz), end: localMidnight(p.y + 1, 1, 1, tz) };
 	throw new Error(`unknown period kind "${kind}"`);
 }
 
-export const previousPeriod = (period, tz) => periodOf(period.kind, period.start - 1, tz);
+/** The period before; undefined for the all-time report, which has none. */
+export const previousPeriod = (period, tz) => (period.kind === ALL_TIME ? undefined : periodOf(period.kind, period.start - 1, tz));
+/** The period after; undefined for the all-time report, which has none. */
+export const nextPeriod = (period, tz) => (period.kind === ALL_TIME ? undefined : periodOf(period.kind, period.end, tz));
+
+// End of the last ready day of the run of days starting at start, at most until; start when none is ready.
+function lastReadyDay(start, until, tz, ready) {
+	let cutoff = start;
+	for (let d = periodOf("daily", start, tz); d.end <= until && ready(d); d = periodOf("daily", d.end, tz)) cutoff = d.end;
+	return cutoff;
+}
 
 /**
  * The periods to report, per kind from the one containing `from` to the one containing now, oldest
- * first. A period that ended and is `ready` is final. A week or month that is still running, or
- * ended but is not ready yet, gets `cutoff`: the end of its last ready day (days in order from its
- * start); it is left out while no day of it is ready. Days are reported only when final.
+ * first, then the all-time report. A period that ended and is `ready` is final. A week, month or
+ * year that is still running, or ended but is not ready yet, gets `cutoff`: the end of its last
+ * ready day (days in order from its start); it is left out while no day of it is ready. Days are
+ * reported only when final. The all-time report runs from the day holding `from` to its cutoff
+ * (`end` equals `cutoff`) and is always running.
  */
 export function reportPeriods(from, now, tz, ready) {
 	const out = [];
@@ -103,12 +120,14 @@ export function reportPeriods(from, now, tz, ready) {
 		for (let p = periodOf(kind, from, tz); p.start < now; p = periodOf(kind, p.end, tz)) {
 			if (p.end <= now && ready(p)) out.push(p);
 			else if (kind !== "daily") {
-				let cutoff = p.start;
-				for (let d = periodOf("daily", p.start, tz); d.end <= Math.min(now, p.end) && ready(d); d = periodOf("daily", d.end, tz)) cutoff = d.end;
+				const cutoff = lastReadyDay(p.start, Math.min(now, p.end), tz, ready);
 				if (cutoff > p.start) out.push({ ...p, cutoff });
 			}
 		}
 	}
+	const start = periodOf("daily", from, tz).start;
+	const cutoff = lastReadyDay(start, now, tz, ready);
+	if (cutoff > start) out.push({ kind: ALL_TIME, key: "all", start, end: cutoff, cutoff });
 	return out;
 }
 
@@ -118,12 +137,13 @@ const dataEnd = (period) => period.cutoff ?? period.end;
 /**
  * Fingerprint of the data a period's report is built from: the rows and limit snapshots from the
  * previous period's start to the period's data end (`cutoff` while running), their accounts'
- * labels, the cutoff, the time zone and REPORT_VERSION. Independent of the order of rows and
- * snapshots, so every device that pulled the same data computes the same value.
+ * labels, the cutoff, whether the next period has a report (`hasNext`, the forward link), the time
+ * zone and REPORT_VERSION. Independent of the order of rows and snapshots, so every device that
+ * pulled the same data computes the same value.
  */
-export function inputHash(period, rows, limits, labels, tz) {
+export function inputHash(period, rows, limits, labels, tz, hasNext = false) {
 	// shortcut: the untracked-use median also reads up to 30 days of older data, not hashed here; a change there alone does not rebuild the report.
-	const from = previousPeriod(period, tz).start;
+	const from = previousPeriod(period, tz)?.start ?? period.start;
 	const inside = (t) => t >= from && t < dataEnd(period);
 	const accounts = new Set();
 	const lines = [];
@@ -136,14 +156,15 @@ export function inputHash(period, rows, limits, labels, tz) {
 		lines.push(JSON.stringify([s.device, s.account, s.limitId, s.recordedAt, s.usedFraction ?? null, s.resetsAt ?? null, s.label ?? null, s.window ?? null, s.durationMs ?? null]));
 	}
 	const named = [...accounts].filter((a) => Object.hasOwn(labels, a)).sort().map((a) => [a, labels[a]]);
-	const head = [REPORT_VERSION, tz, period.kind, period.key, period.cutoff ?? null, named, hasPrevious(period, rows, limits, tz)];
+	const head = [REPORT_VERSION, tz, period.kind, period.key, period.cutoff ?? null, named, hasPrevious(period, rows, limits, tz), hasNext];
 	return createHash("sha256").update(JSON.stringify(head)).update(lines.sort().join("\n")).digest("hex");
 }
 
 /** Whether any row or snapshot lies before the previous period's end, so the previous period has a report. */
 export function hasPrevious(period, rows, limits, tz) {
-	const end = previousPeriod(period, tz).end;
-	return rows.some((r) => r.hour < end) || limits.some((s) => s.recordedAt < end);
+	const previous = previousPeriod(period, tz);
+	if (!previous) return false;
+	return rows.some((r) => r.hour < previous.end) || limits.some((s) => s.recordedAt < previous.end);
 }
 
 /** Latest time each device shows in the data: its newest snapshot or the start of its newest row's hour. */
@@ -203,17 +224,23 @@ function stacked(rows, keyOf, partOf) {
 	return [...m.values()].sort((a, b) => b.value - a.value);
 }
 
-// Chart buckets: local hours of a day, else local days of the period.
+const monthKey = (p) => `${p.y}-${pad(p.m)}`;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Year and all-time charts have one bar per month.
+const byMonth = (period) => period.kind === "yearly" || period.kind === ALL_TIME;
+
+// Chart buckets: local hours of a day, months of a year or of all time, else local days of the period.
 function buckets(period, tz) {
 	if (period.kind === "daily")
 		return Array.from({ length: 24 }, (_, h) => ({ key: String(h), label: pad(h), start: period.start + h * HOUR_MS }));
 	const out = [];
 	const first = localParts(period.start, tz);
 	for (let i = 0; ; i++) {
-		const start = localMidnight(first.y, first.m, first.d + i, tz);
+		const start = byMonth(period) ? localMidnight(first.y, first.m + i, 1, tz) : localMidnight(first.y, first.m, first.d + i, tz);
 		if (start >= period.end) return out;
 		const p = localParts(start, tz);
-		out.push({ key: dateKey(p), label: period.kind === "weekly" ? `${WEEKDAYS[p.wd]} ${p.d}` : String(p.d), start, weekday: p.wd });
+		if (byMonth(period)) out.push({ key: monthKey(p), label: period.kind === "yearly" ? MONTHS[p.m - 1] : `${MONTHS[p.m - 1]} ’${String(p.y).slice(2)}`, start });
+		else out.push({ key: dateKey(p), label: period.kind === "weekly" ? `${WEEKDAYS[p.wd]} ${p.d}` : String(p.d), start, weekday: p.wd });
 	}
 }
 
@@ -223,7 +250,7 @@ export function timeline(rows, period, tz, series) {
 	const byKey = new Map(list.map((b) => [b.key, b]));
 	for (const r of rows) {
 		const p = localParts(r.hour, tz);
-		const b = byKey.get(period.kind === "daily" ? String(p.h) : dateKey(p));
+		const b = byKey.get(period.kind === "daily" ? String(p.h) : byMonth(period) ? monthKey(p) : dateKey(p));
 		if (!b) continue;
 		const s = series.includes(r.project) ? r.project : OTHER;
 		b.value += r.cost;
@@ -343,6 +370,8 @@ function periodLabel(period, tz) {
 	const fmt = (ms, opts) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, ...opts }).format(ms);
 	if (period.kind === "daily") return fmt(period.start, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 	if (period.kind === "monthly") return fmt(period.start, { month: "long", year: "numeric" });
+	if (period.kind === "yearly") return period.key;
+	if (period.kind === ALL_TIME) return `All time · since ${fmt(period.start, { day: "numeric", month: "long", year: "numeric" })}`;
 	const week = Number(period.key.slice(-2));
 	return `Week ${week} · ${fmt(period.start, { day: "numeric", month: "short" })} – ${fmt(period.end - 1, { day: "numeric", month: "short", year: "numeric" })}`;
 }
@@ -351,10 +380,11 @@ function periodLabel(period, tz) {
  * Everything a report page shows for one period.
  *
  * @param {{period: object, rows: any[], limits: any[], labels: Record<string, string>, tz: string,
- *   now: number, generator: string}} input rows and limits of every device, with `device`, covering
- *   the period, the previous period and the 30 days before now (closed-window medians).
+ *   now: number, generator: string, hasNext?: boolean}} input rows and limits of every device, with
+ *   `device`, covering the period, the previous period and the 30 days before now (closed-window
+ *   medians); hasNext: the next period has a report to link to.
  */
-export function digest({ period, rows, limits, labels, tz, now, generator }) {
+export function digest({ period, rows, limits, labels, tz, now, generator, hasNext = false }) {
 	const previous = previousPeriod(period, tz);
 	// A running period covers [start, cutoff); it is compared with the same length of the period before.
 	const window = { ...period, end: dataEnd(period) };
@@ -375,12 +405,14 @@ export function digest({ period, rows, limits, labels, tz, now, generator }) {
 		period,
 		dataEnd: window.end,
 		previous: hasPrevious(period, rows, limits, tz) ? previous : undefined,
+		next: hasNext ? nextPeriod(period, tz) : undefined,
 		label: periodLabel(period, tz),
 		tz,
 		generatedAt: now,
 		generator,
 		totals: totals(current),
-		previousTotals: totals(rows.filter(within({ start: previous.start, end: Math.min(previous.end, previous.start + window.end - window.start) }))),
+		// The all-time report has nothing to compare with.
+		previousTotals: previous && totals(rows.filter(within({ start: previous.start, end: Math.min(previous.end, previous.start + window.end - window.start) }))),
 		accounts: accountViews(rows, limits, window, now, labelOf),
 		firstSnapshot: limits.reduce((m, s) => Math.min(m, s.recordedAt), Number.POSITIVE_INFINITY),
 		projects,
@@ -389,6 +421,7 @@ export function digest({ period, rows, limits, labels, tz, now, generator }) {
 		timeline: timeline(current, period, tz, series),
 		heatmap: period.kind === "daily" ? undefined : heatmap(current, tz),
 		weeks: period.kind === "monthly" ? sumBy(current, (r) => periodOf("weekly", r.hour, tz).key).sort((a, b) => a.name.localeCompare(b.name)) : undefined,
+		days: byMonth(period) ? new Map(sumBy(current, (r) => dateKey(localParts(r.hour, tz))).map((x) => [x.name, x.value])) : undefined,
 		sessions: topSessions(current, labelOf),
 		features,
 		automatic: features.filter((f) => !isUser(f.name)).reduce((s, f) => s + f.value, 0),

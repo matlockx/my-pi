@@ -68,9 +68,24 @@ test("accounts without limit snapshots share one line that says why, and an unna
 	assert.doesNotMatch(html, /No limit use recorded/);
 });
 
-test("the previous-period link appears only when older data gives that period a report", () => {
+test("the previous link needs older data, the next link needs the next period's report", () => {
 	assert.doesNotMatch(render([row("t", "p")]), /← 2026-W44/, "oldest report");
 	assert.match(render([row("t", "p"), { ...row("t", "p"), hour: period.start - 30 * 24 * HOUR_MS }]), /href="\.\.\/weekly\/2026-W44\.html">← 2026-W44/);
+	assert.doesNotMatch(render([row("t", "p")]), /2026-W46 →/);
+	const linked = renderReport(digest({ period, rows: [row("t", "p")], limits: [], labels: {}, tz: TZ, now: period.end, generator: "mac", hasNext: true }));
+	assert.match(linked, /href="\.\.\/weekly\/2026-W46\.html">2026-W46 →/);
+});
+
+test("the all-time report has no comparison or neighbour links, and charts months and every day", () => {
+	const start = period.start;
+	const allTime = { kind: "alltime", key: "all", start, end: start + 40 * 24 * HOUR_MS, cutoff: start + 40 * 24 * HOUR_MS };
+	const html = renderReport(digest({ period: allTime, rows: [row("t", "p"), { ...row("t", "p"), hour: start + 35 * 24 * HOUR_MS }], limits: [], labels: {}, tz: TZ, now: allTime.end, generator: "mac" }));
+	assert.match(html, /All time · since 2 November 2026/);
+	assert.match(html, /since 2 Nov 2026<\/span>/);
+	assert.doesNotMatch(html, /class="delta|← |→<\/a>/);
+	assert.match(html, /Cost per month/);
+	assert.match(html, /Active on 2 of 39 days since the first active one · busiest 2026-11-03 with \$4\.00/);
+	assert.match(renderIndex({ alltime: ["all"] }), /href="alltime\/all\.html"/);
 });
 
 test("plain drops icon glyphs, niceMax rounds axis tops up", () => {

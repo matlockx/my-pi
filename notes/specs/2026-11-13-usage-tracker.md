@@ -145,24 +145,30 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
 - [x] **Phase 5 — Docs**
   - Files: `extensions/usage/index.ts` header (config, repo layout, sync, privacy), this spec's state.
 
-- [x] **Phase 6 — HTML reports (daily, weekly, monthly)**
+- [x] **Phase 6 — HTML reports (daily, weekly, monthly, yearly, all time)**
   - Files: `extensions/usage/digest.mjs` (periods, readiness, figures), `extensions/usage/page.mjs`
     (HTML), `extensions/usage/collect.mjs` (`writeReports`, `pushReports`), tests `digest.test.mjs`,
     `page.test.mjs`, `collect.test.mjs`; `report.mjs` exports `durationOf`, `limitDelta` and
     `untrackedRatio` for reuse.
-  - Periods: local day, ISO week (Monday start) and month in `timezone` of the config (default
+  - Periods: local day, ISO week (Monday start), month and year in `timezone` of the config (default
     `Europe/Berlin`). Each run covers every period from the one holding the oldest row or snapshot in
-    the repository (`reportPeriods`); idle periods in between get the empty-state page.
+    the repository (`reportPeriods`); idle periods in between get the empty-state page. One all-time
+    report (`reports/alltime/all.html`) runs from the oldest data's day to the last ready day: always
+    running, no comparison and no neighbour links.
   - Ready: once every device with rows in the period shows a row or snapshot after its end, or
     24 hours after the end at the latest (an asleep device cannot block a report forever). A day is
-    reported once ready. The current week and month, and an ended one not ready yet, get a running
-    report with `cutoff` = end of their last ready day: updated once a day, marked "running" on the
-    page and in the index, KPIs compared with the same span of the period before.
+    reported once ready. The current week, month and year, and an ended one not ready yet, get a
+    running report with `cutoff` = end of their last ready day: updated once a day, marked "running"
+    on the page and in the index, KPIs compared with the same span of the period before.
+  - Year and all time: cost per month instead of per day, a GitHub-style grid of every day (active
+    days, busiest day), only the 7-day-or-longer limit lines, at most 500 points per line (highest
+    snapshot per slot), and the device split. The index leads with an all-time card.
   - Rebuild: each page stores `inputHash` (digest.mjs) in `<meta name="usage-input">`: a sha256 of
     the rows and snapshots of the previous period and the period up to its cutoff, their accounts'
-    labels, the cutoff, the time zone and `REPORT_VERSION` (2 since running reports). A report is
-    written when its file is missing or the hash differs, so a new device, a backfill, a renamed
-    session or a new label rebuilds exactly the affected reports;
+    labels, the cutoff, whether the next period has a report (the "next →" link beside "← previous"),
+    the time zone and `REPORT_VERSION` (3 since the forward link). A report is written when its file
+    is missing or the hash differs, so a new device, a backfill, a renamed session, a new label or
+    the next period's first report rebuilds exactly the affected reports;
     bumping `REPORT_VERSION` rebuilds all after a page change. The untracked-use median reads windows
     closed by the period's end, so a rebuild shows the same flag; older data feeding that median is
     not hashed (accepted: a change there alone does not rebuild).

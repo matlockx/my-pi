@@ -27,6 +27,9 @@ test("report periods run from the oldest data; the running week and month stop a
 	assert.deepEqual([days.length, days[0], days.at(-1)], [14, "2026-10-30", "2026-11-12"], "today is not reported until it ends");
 	assert.deepEqual(keys(all, "weekly"), ["2026-W44", "2026-W45", "2026-W46<2026-11-12T23:00:00.000Z"], "W46 runs up to the end of 12 November");
 	assert.deepEqual(keys(all, "monthly"), ["2026-10", "2026-11<2026-11-12T23:00:00.000Z"]);
+	assert.deepEqual(keys(all, "yearly"), ["2026<2026-11-12T23:00:00.000Z"]);
+	const [allTime] = all.filter((p) => p.kind === "alltime");
+	assert.deepEqual([allTime.key, iso(allTime.start), iso(allTime.end), allTime.cutoff], ["all", "2026-10-29T23:00:00.000Z", "2026-11-12T23:00:00.000Z", allTime.end], "from the oldest day to the last ready one");
 
 	const thursdayPending = plan((p) => p.key !== "2026-11-12");
 	assert.deepEqual(keys(thursdayPending, "weekly").at(-1), "2026-W46<2026-11-11T23:00:00.000Z", "a day not ready yet holds the cutoff back");

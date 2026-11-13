@@ -4,10 +4,14 @@
  * Every text from the repository (titles, projects, labels, device names) is HTML-escaped.
  */
 
-import { OTHER, TOKEN_PRICE } from "./digest.mjs";
+import { localMidnight, localParts, OTHER, TOKEN_PRICE } from "./digest.mjs";
 
-const KIND_NAMES = { daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
+const KIND_NAMES = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly", alltime: "All-time" };
+const MAX_CHART_POINTS = 500;
+// Periods charted per month: long limit windows only, a day grid instead of a calendar.
+const isLong = (d) => d.period.kind === "yearly" || d.period.kind === "alltime";
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const TOKEN_NAMES = { input: "Fresh input", cacheWrite: "Cache write", cacheRead: "Cache read", output: "Output" };
 const TOP_PROJECTS = 10;
 const TOP_FEATURES = 8;
@@ -82,12 +86,14 @@ function delta(k, a, b) {
 }
 
 function kpis(d) {
-	const before = { daily: "the day before", weekly: "the week before", monthly: "the month before" }[d.period.kind];
+	const before = { daily: "the day before", weekly: "the week before", monthly: "the month before", yearly: "the year before" }[d.period.kind];
 	const word = d.period.cutoff ? `by this point ${before}` : before;
+	const since = `since ${new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, day: "numeric", month: "short", year: "numeric" }).format(d.period.start)}`;
 	return `<section class="kpis">${KPIS.map((k) => {
 		const a = k.get(d.totals);
-		const b = k.get(d.previousTotals);
-		return `<div class="kpi"><div class="kpi-label">${k.label}</div><div class="kpi-value">${k.fmt(a)}</div><div class="kpi-foot">${delta(k, a, b)}<span>${k.fmt(b)} ${word}</span></div></div>`;
+		// The all-time report has no period before it.
+		const foot = d.previousTotals ? `${delta(k, a, k.get(d.previousTotals))}<span>${k.fmt(k.get(d.previousTotals))} ${word}</span>` : `<span>${since}</span>`;
+		return `<div class="kpi"><div class="kpi-label">${k.label}</div><div class="kpi-value">${k.fmt(a)}</div><div class="kpi-foot">${foot}</div></div>`;
 	}).join("")}</section>`;
 }
 
@@ -171,8 +177,9 @@ function columns(d) {
 
 function timeCard(d) {
 	if (!d.totals.requests) return "";
-	const what = d.period.kind === "daily" ? "Cost per hour" : "Cost per day";
-	return card(what, `Split by the top projects; ${d.period.kind === "daily" ? "local hours" : "weekends shaded"}, ${esc(d.tz)}.`, legend([...d.series, OTHER]) + columns(d));
+	const what = d.period.kind === "daily" ? "Cost per hour" : isLong(d) ? "Cost per month" : "Cost per day";
+	const how = d.period.kind === "daily" ? "local hours" : isLong(d) ? "local months" : "weekends shaded";
+	return card(what, `Split by the top projects; ${how}, ${esc(d.tz)}.`, legend([...d.series, OTHER]) + columns(d));
 }
 
 function heatCell(v, max, title) {
@@ -202,6 +209,39 @@ function calendarCard(d) {
 	return card("Calendar", "Cost per day of the month.", `<div class="cal">${WEEKDAYS.map((w) => `<div class="hd">${w}</div>`).join("")}${blanks}${days}</div>${weeks}`);
 }
 
+/** GitHub-style grid of the cost per local day: one column per week, Monday on top. */
+function dayGridCard(d) {
+	if (!d.days || !d.totals.requests) return "";
+	const first = localParts(d.period.start, d.tz);
+	const max = Math.max(...d.days.values());
+	const cells = [];
+	const months = [];
+	for (let i = -first.wd; ; i++) {
+		const start = localMidnight(first.y, first.m, first.d + i, d.tz);
+		const p = localParts(start, d.tz);
+		if (start >= d.period.end && p.wd === 0) break;
+		if (p.wd === 0) months.push(i === -first.wd || p.d <= 7 ? MONTH_NAMES[p.m - 1] : "");
+		const key = `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`;
+		if (start < d.period.start || start >= d.period.end) cells.push(`<i class="out"></i>`);
+		else if (start >= d.dataEnd) cells.push(`<i class="future" title="${key}"></i>`);
+		else {
+			const v = d.days.get(key) ?? 0;
+			const level = v > 0 ? Math.ceil((v / max) * 4) * 25 : 0;
+			cells.push(`<i style="background:color-mix(in srgb, var(--accent) ${level}%, var(--cell))" title="${key}: ${money(v)}"></i>`);
+		}
+	}
+	const [busiest] = [...d.days].sort((a, b) => b[1] - a[1]);
+	const [y, m, day] = [...d.days.keys()].sort()[0].split("-").map(Number);
+	const span = Math.round((Math.min(d.period.end, d.dataEnd) - localMidnight(y, m, day, d.tz)) / 86_400_000);
+	const summary = `<p class="muted small">Active on ${d.days.size} of ${span} days since the first active one · busiest ${esc(busiest[0])} with ${money(busiest[1])}</p>`;
+	const weekdays = WEEKDAYS.map((w, i) => `<span>${i % 2 ? "" : w}</span>`).join("");
+	return card(
+		"Every day",
+		"Cost per local day; darker is more.",
+		`<div class="yr"><div class="yr-inner"><div></div><div class="yr-m">${months.map((m) => `<span>${m}</span>`).join("")}</div><div class="yr-d">${weekdays}</div><div class="yr-g">${cells.join("")}</div></div></div>${summary}`,
+	);
+}
+
 // --- Limits
 
 function limitChart(limits, d) {
@@ -214,15 +254,25 @@ function limitChart(limits, d) {
 	const out = [];
 	for (const v of [0, 0.25, 0.5, 0.75, 1]) out.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${pct(v)}</text>`);
 	out.push(`<line class="warnline" x1="${L}" x2="${W - R}" y1="${y(0.9)}" y2="${y(0.9)}"/>`);
-	const every = d.period.kind === "daily" ? 3 : d.period.kind === "weekly" ? 1 : 3;
+	const every = d.period.kind === "weekly" ? 1 : Math.max(1, Math.ceil(d.timeline.length / (d.period.kind === "daily" ? 8 : 12)));
 	d.timeline.forEach((b, i) => {
-		if (i % every === 0) out.push(`<text class="axis" x="${x(b.start).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(b.label)}</text>`);
+		// A bucket that starts before the period (the all-time report's first month) would overlap the next label.
+		if (i % every === 0 && b.start >= start) out.push(`<text class="axis" x="${x(b.start).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(b.label)}</text>`);
 	});
+	// Long periods keep the highest snapshot per slot of the chart width, so a year stays a few hundred points.
+	const step = (end - start) / MAX_CHART_POINTS;
+	const gap = Math.max(3 * 3_600_000, 2 * step);
 	limits.forEach((l, i) => {
+		const slots = new Map();
+		for (const p of l.points) {
+			const slot = Math.floor((p[0] - start) / step);
+			if (!(slots.get(slot)?.[1] >= p[1])) slots.set(slot, p);
+		}
+		const points = l.points.length > MAX_CHART_POINTS ? [...slots.values()].sort((a, b) => a[0] - b[0]) : l.points;
 		const segments = [];
 		let seg = [];
-		l.points.forEach(([t, v], j) => {
-			if (j && t - l.points[j - 1][0] > 3 * 3_600_000) segments.push((seg = []));
+		points.forEach(([t, v], j) => {
+			if (j && t - points[j - 1][0] > gap) segments.push((seg = []));
 			else if (!segments.length) segments.push(seg);
 			seg.push([x(t), y(v), t, v]);
 		});
@@ -274,8 +324,8 @@ function labelHint(a) {
 }
 
 function accountBlock(a, d) {
-	// A month of 5-hour windows is a wall of spikes; the monthly chart keeps the long windows, the chips keep the 5-hour figures.
-	const charted = d.period.kind === "monthly" ? a.limits.filter((l) => l.duration >= 24 * 3_600_000) : a.limits;
+	// A month or more of 5-hour windows is a wall of spikes; long charts keep the long windows, the chips keep the 5-hour figures.
+	const charted = d.period.kind === "monthly" || isLong(d) ? a.limits.filter((l) => l.duration >= 24 * 3_600_000) : a.limits;
 	const chart = charted.length ? limitChart(charted, d) : "";
 	return `<div class="account"><div class="account-head"><h3>${esc(a.label)}</h3><span>${money(a.cost)} · ${compact(a.requests)} requests</span></div>${a.labelled ? "" : labelHint(a)}<div class="chips">${a.limits.flatMap((l) => limitChips(l, d.tz)).join("")}</div>${chart}</div>`;
 }
@@ -390,6 +440,10 @@ a{color:inherit}.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 48px}
 code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}.muted{color:var(--muted)}
 .heat{display:grid;grid-template-columns:34px repeat(24,1fr);gap:3px;font-size:11px;color:var(--muted)}.heat .cell{aspect-ratio:1;border-radius:4px}.hh{text-align:left}.hd{align-self:center}
 .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;font-size:11px;color:var(--muted)}.cal .hd{text-align:center}
+.yr{overflow-x:auto;padding-bottom:4px}.yr-inner{display:inline-grid;grid-template-columns:30px auto;gap:4px 6px;font-size:11px;color:var(--muted)}
+.yr-m,.yr-g{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px}.yr-m span{white-space:nowrap;overflow:visible;width:13px}
+.yr-g{grid-template-rows:repeat(7,13px)}.yr-d{display:grid;grid-template-rows:repeat(7,13px);gap:3px;line-height:13px}
+.yr-g i{border-radius:3px;background:var(--cell)}.yr-g i.out{background:transparent}.yr-g i.future{opacity:.35}
 .day{border-radius:10px;padding:6px 7px;min-height:52px;display:flex;flex-direction:column;justify-content:space-between;color:var(--fg)}.day b{font-size:12px}.day span{font-size:11px;font-variant-numeric:tabular-nums}
 h3.minor{font-size:13px;color:var(--muted);font-weight:600;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.06em}
 .scroll{overflow-x:auto}table.sessions{width:100%;border-collapse:collapse;font-size:13.5px}.sessions th{text-align:left;font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em;padding:0 10px 8px;border-bottom:1px solid var(--border)}
@@ -402,9 +456,11 @@ h3.minor{font-size:13px;color:var(--muted);font-weight:600;margin:18px 0 8px;tex
 .hero nav .live{background:#22c55e33;border-color:#4ade8088}.live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;margin-right:7px;box-shadow:0 0 0 3px #4ade8040}
 .badge{font-size:11px;font-weight:650;color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);padding:1px 8px;border-radius:999px;margin-left:8px}
 footer{margin-top:8px;font-size:12.5px;color:var(--muted)}footer p{max-width:820px}
-.index{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}.index ul{list-style:none;margin:0;padding:0}.index li a{display:flex;justify-content:space-between;padding:9px 12px;border-radius:10px;text-decoration:none}
+.index{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:18px}.index ul{list-style:none;margin:0;padding:0;max-height:440px;overflow:auto}.index li a{display:flex;justify-content:space-between;padding:9px 12px;border-radius:10px;text-decoration:none}
 .index li a:hover{background:var(--cell)}.index li a span{color:var(--muted);font-size:12.5px}
-@media (max-width:960px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2,.grid3,.index{grid-template-columns:1fr}}
+a.alltime{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:18px;padding:20px 24px;text-decoration:none}a.alltime:hover{border-color:var(--accent)}
+a.alltime b{font-size:18px}a.alltime span{color:var(--muted);font-size:13.5px}a.alltime em{font-style:normal;color:var(--accent);font-weight:650;white-space:nowrap}
+@media (max-width:960px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2,.grid3{grid-template-columns:1fr}.index{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.hero h1{font-size:26px}.bar-row{grid-template-columns:110px 1fr 64px}}
 `;
 
@@ -428,7 +484,7 @@ export function renderReport(d, hash) {
 	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, weekday: "short", day: "numeric", month: "short" }).format(ms);
 	const live = d.period.cutoff ? `<span class="live"><i class="live-dot"></i>Running · data up to and including ${esc(day(d.period.cutoff - 1))} · updated daily</span>` : "";
 	const hero = `<header class="hero"><div class="eyebrow">Agent usage · ${kind} report${d.period.cutoff ? " · so far" : ""}</div><h1>${esc(d.label)}</h1>
-<nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}${live}<span>${esc(d.tz)}</span></nav></header>`;
+<nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}${d.next ? `<a href="../${reportPath(d.next)}">${esc(d.next.key)} →</a>` : ""}${live}<span>${esc(d.tz)}</span></nav></header>`;
 	if (!d.totals.requests && !d.accounts.some((a) => a.limits.length))
 		return shell(`${kind} usage · ${d.period.key}`, `${hero}${kpis(d)}${card("No tracked usage", "", `<div class="empty"><b>Nothing ran ${d.period.cutoff ? "so far" : "in this period"}.</b>No device recorded a request or a limit snapshot.</div>`)}${devicesFooter(d)}`, hash);
 	const body = [
@@ -437,9 +493,10 @@ export function renderReport(d, hash) {
 		limitsCard(d),
 		timeCard(d),
 		`<div class="grid2 row">${projectsCard(d)}${featuresCard(d)}</div>`,
+		isLong(d) ? dayGridCard(d) : "",
 		d.period.kind === "daily" ? "" : `<div class="grid2 row">${heatmapCard(d)}${d.period.kind === "monthly" ? calendarCard(d) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
 		sessionsCard(d),
-		`<div class="grid3 row">${tokenCard(d)}${mixCard("Models", "Cost per model.", d.models)}${d.period.kind === "weekly" ? mixCard("Devices", "Cost per device.", d.devices.map((v) => ({ name: v.name, value: v.cost })).filter((v) => v.value > 0)) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
+		`<div class="grid3 row">${tokenCard(d)}${mixCard("Models", "Cost per model.", d.models)}${d.period.kind === "weekly" || isLong(d) ? mixCard("Devices", "Cost per device.", d.devices.map((v) => ({ name: v.name, value: v.cost })).filter((v) => v.value > 0)) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
 		devicesFooter(d),
 	];
 	return shell(`${kind} usage · ${d.period.key}`, body.join("\n"), hash);
@@ -451,6 +508,7 @@ export function renderReport(d, hash) {
  */
 export function renderIndex(reports, running = new Set()) {
 	const columns = Object.entries(KIND_NAMES)
+		.filter(([kind]) => kind !== "alltime")
 		.map(([kind, name]) => {
 			const keys = reports[kind] ?? [];
 			const badge = (k) => (running.has(`${kind}/${k}.html`) ? `<em class="badge">running</em>` : "");
@@ -458,8 +516,11 @@ export function renderIndex(reports, running = new Set()) {
 			return card(name, `${keys.length} report${keys.length === 1 ? "" : "s"}`, `<ul>${items}</ul>`);
 		})
 		.join("");
+	const allTime = reports.alltime?.length
+		? `<a class="card alltime" href="alltime/${esc(reports.alltime[0])}.html"><div><b>All time</b><br><span>Everything since the first recorded request, summed and updated daily.</span></div><em>Open →</em></a>`
+		: "";
 	return shell(
 		"Agent usage reports",
-		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly and monthly. The running week and month update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header><div class="index">${columns}</div>`,
+		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly, monthly, yearly and all time. Running reports update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header>${allTime}<div class="index">${columns}</div>`,
 	);
 }

@@ -193,3 +193,18 @@ test("reports reach back to the oldest data, and a new device rebuilds only the 
 	assert.equal(rebuilt.includes(report("daily", "2026-11-20")), false);
 	assert.match(readFileSync(join(repo, report("daily", "2026-11-13")), "utf8"), /\$3\.00/, "both devices' cost");
 });
+
+test("a report links forward once the next period has a report, and is rebuilt to add the link", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-next-"));
+	git(repo, "init", "--quiet");
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage: () => ({ reports: [], history: [] }) });
+	const tz = "Europe/Berlin";
+	const page = (key) => readFileSync(join(repo, "reports", "daily", `${key}.html`), "utf8");
+	writeReports({ repo, now: Date.parse("2026-11-16T12:00:00.000Z"), tz, device: "mac-a" });
+	assert.match(page("2026-11-14"), /href="\.\.\/daily\/2026-11-15\.html">2026-11-15 →/);
+	assert.doesNotMatch(page("2026-11-15"), /2026-11-16 →/, "the newest day has nothing to link to");
+
+	const nextDay = writeReports({ repo, now: Date.parse("2026-11-17T12:00:00.000Z"), tz, device: "mac-a" });
+	assert.ok(nextDay.includes(join("reports", "daily", "2026-11-15.html")), "rebuilt for the new link");
+	assert.match(page("2026-11-15"), /href="\.\.\/daily\/2026-11-16\.html">2026-11-16 →/);
+});

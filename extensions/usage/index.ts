@@ -14,10 +14,10 @@
  * collect.mjs hourly: it writes `devices/<device>/` (store.mjs layout) and commits, pulls with
  * rebase and pushes. Each device writes only its own directory, so pulls never conflict. A root
  * `accounts.json` ({ "<account hash>": "<label>" }) overrides the labels devices write.
- * After the pull it writes `reports/{daily,weekly,monthly}/<period>.html` and `reports/index.html`
- * for every period since the oldest data whose report is missing or was built from other data (a
- * new device, a backfill); the running week and month update once a day. The first device to push
- * a report wins.
+ * After the pull it writes `reports/{daily,weekly,monthly,yearly}/<period>.html`,
+ * `reports/alltime/all.html` and `reports/index.html` for every period since the oldest data whose
+ * report is missing or was built from other data (a new device, a backfill); the running week,
+ * month, year and the all-time report update once a day. The first device to push a report wins.
  *
  * Privacy: rows carry session titles and project folder names, passed through the secret
  * redactor, and account labels name the account e-mail. Work session titles therefore leave

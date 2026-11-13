@@ -20,7 +20,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { digest, inputHash, isReady, KINDS, lastSeen, localParts, reportPeriods } from "./digest.mjs";
+import { digest, inputHash, isReady, lastSeen, localParts, nextPeriod, REPORT_KINDS, reportPeriods } from "./digest.mjs";
 import { renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
 import { accountHash, scanSessions } from "./parse.mjs";
 import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
@@ -213,7 +213,7 @@ export function sync(repo, device) {
 /** Report keys per kind in the repository's reports directory, newest first. */
 export function listReports(repo) {
 	const out = {};
-	for (const kind of KINDS) {
+	for (const kind of REPORT_KINDS) {
 		let names = [];
 		try {
 			names = readdirSync(join(repo, "reports", kind));
@@ -251,13 +251,17 @@ export function writeReports({ repo, now, tz, device }) {
 	if (!Number.isFinite(first)) return [];
 	const seen = lastSeen(rows, limits);
 	const periods = reportPeriods(first, now, tz, (p) => isReady(p, rows, seen, now));
+	// DEV-NOTE: the forward link needs the next period's report to exist; once it appears, the hash change rebuilds this one.
+	const planned = new Set(periods.map(reportPath));
 	const written = [];
 	for (const period of periods) {
 		const path = join("reports", reportPath(period));
-		const hash = inputHash(period, rows, limits, labels, tz);
+		const next = nextPeriod(period, tz);
+		const hasNext = Boolean(next) && planned.has(reportPath(next));
+		const hash = inputHash(period, rows, limits, labels, tz, hasNext);
 		if (storedHash(readIfExists(join(repo, path))) === hash) continue;
 		mkdirSync(dirname(join(repo, path)), { recursive: true });
-		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device }), hash));
+		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device, hasNext }), hash));
 		written.push(path);
 	}
 	const running = new Set(periods.filter((p) => p.cutoff).map(reportPath));
