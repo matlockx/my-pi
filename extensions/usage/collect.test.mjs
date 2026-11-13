@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { accountsAndLimits, collect, pushReports, resolveUnpinned, sync, writeReports } from "./collect.mjs";
+import { accountsAndLimits, collect, pushReports, resolveUnpinned, runJson, sync, writeReports } from "./collect.mjs";
 import { accountHash } from "./parse.mjs";
 import { readRepo } from "./store.mjs";
 
@@ -52,6 +52,11 @@ test("unpinned rows take the provider's account only when the device has exactly
 		resolveUnpinned(rows, two).map((r) => r.account),
 		[C, "unpinned:openai"],
 	);
+});
+
+test("JSON output above Node's 1 MiB default buffer is read whole", () => {
+	const script = "process.stdout.write(JSON.stringify({ entries: Array.from({ length: 20000 }, (_, i) => ({ i, pad: 'x'.repeat(100) })) }))";
+	assert.equal(runJson(process.execPath, ["-e", script]).entries.length, 20000, "about 2.4 MB of output");
 });
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

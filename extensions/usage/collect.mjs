@@ -124,9 +124,15 @@ export function resolveUnpinned(rows, byProvider) {
 	});
 }
 
-function omp(args) {
-	return JSON.parse(execFileSync("omp", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+// Node's default of 1 MiB fails with ENOBUFS on `omp usage --history` over all history (about 460 bytes per snapshot).
+const JSON_OUTPUT_MAX_BYTES = 512 * 1024 * 1024;
+
+/** Runs cmd and parses its stdout as JSON; output up to JSON_OUTPUT_MAX_BYTES. */
+export function runJson(cmd, args) {
+	return JSON.parse(execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: JSON_OUTPUT_MAX_BYTES }));
 }
+
+const omp = (args) => runJson("omp", args);
 
 /** Live reports and recent history from the omp CLI. */
 export function ompUsage(days) {
