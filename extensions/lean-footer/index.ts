@@ -1,7 +1,9 @@
 /**
  * lean-footer — high-contrast, color-coded replacement for pi's built-in
  * footer stats line. Replaces the uniformly-dim line via ctx.ui.setFooter().
- * Under omp, renders the token/cache/cost segments as a below-editor widget.
+ * Under omp, renders the token/cache/cost segments as a below-editor widget,
+ * led by the route of the next request: provider/model and the OAuth account
+ * (e-mail) or `api key`. The route shows even with the colors toggled off.
  *
  * Color families (truecolor ANSI, tuned for dark terminals):
  *   IN side  (blue/cyan family) — tokens that feed the model:
@@ -38,6 +40,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
+import { routeLabel } from "./route.mjs";
 import { usageTotals } from "./usage.mjs";
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "lean-footer.json");
@@ -80,6 +83,7 @@ const COL = {
 	ctxWarn: "240;190;90",
 	ctxCrit: "240;110;110",
 	dim: "125;125;138", // chrome
+	route: "200;150;255", // provider/model · account
 };
 
 const fmt = (n: number): string =>
@@ -131,14 +135,28 @@ function usageParts(ctx: Ctx): Array<[string, string]> {
 	return parts;
 }
 
+type Identity = Parameters<typeof routeLabel>[1];
+type OAuthAuthStorage = { oauth?: { identity?: (provider: string, sessionId: string) => Identity } };
+
+/** Route segment as a [plain, colored] pair; see routeLabel. */
+function routePart(ctx: Ctx): [string, string] {
+	const model = ctx.model;
+	// DEV-NOTE: omp's AuthStorage (not pi's) resolves the session's OAuth account; omp calls the same
+	// method to write its credential_pin entries, so the label matches the account that is billed.
+	const storage = (ctx.modelRegistry as { authStorage?: OAuthAuthStorage } | undefined)?.authStorage;
+	const identity = model ? storage?.oauth?.identity?.(model.provider, ctx.sessionManager.getSessionId()) : undefined;
+	const s = routeLabel(model, identity);
+	return [s, c(COL.route, s, true)];
+}
+
 export default function leanFooter(pi: ExtensionAPI) {
 	let enabled = loadDefault();
 
 	function publishStatus(ctx: Ctx) {
-		const parts = enabled ? usageParts(ctx) : [];
+		const parts = [routePart(ctx), ...(enabled ? usageParts(ctx) : [])];
 		ctx.ui.setWidget(
 			WIDGET_KEY,
-			parts.length > 0 ? [parts.map((p) => p[1]).join(" ")] : undefined,
+			[parts.map((p) => p[1]).join(" ")],
 			{ placement: "belowEditor" },
 		);
 	}
