@@ -29,16 +29,18 @@ const row = (hour, sessionId, cost, extra = {}) => ({
 });
 const repo = () => mkdtempSync(join(tmpdir(), "usage-store-"));
 
-test("re-running a write changes nothing; a newer value replaces; rows missing from a later scan stay", () => {
+test("re-running a write changes nothing; a session's new rows replace its old ones; other sessions stay", () => {
 	const dev = join(repo(), "devices", "mac-1");
-	const rows = [row(DAY1, "s1", 1), row(DAY1 + HOUR_MS, "s1", 2)];
+	const rows = [row(DAY1, "s1", 1), row(DAY1 + HOUR_MS, "s1", 2), row(DAY1, "s2", 7)];
 	assert.equal(writeRows(dev, rows), 2, "one file per UTC day");
 	assert.equal(writeRows(dev, rows), 0);
-	assert.equal(writeRows(dev, [row(DAY1, "s1", 5)]), 1);
+	// The feature is part of the row key: a re-classified row must not stay beside its replacement.
+	assert.equal(writeRows(dev, [row(DAY1, "s1", 5, { feature: "command:/review" }), row(DAY1 + HOUR_MS, "s1", 2)]), 1);
 	const { rows: back } = readRepo(join(dev, "..", ".."));
-	assert.deepEqual(back.map((r) => [r.hour, r.cost]).sort(), [
-		[DAY1, 5],
-		[DAY1 + HOUR_MS, 2],
+	assert.deepEqual(back.map((r) => [r.sessionId, r.hour, r.feature, r.cost]).sort(), [
+		["s1", DAY1, "command:/review", 5],
+		["s1", DAY1 + HOUR_MS, "user", 2],
+		["s2", DAY1, "user", 7],
 	]);
 });
 

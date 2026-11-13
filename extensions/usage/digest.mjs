@@ -16,7 +16,7 @@ export const ALL_TIME = "alltime";
 /** Every report kind, in index order. */
 export const REPORT_KINDS = [...KINDS, ALL_TIME];
 /** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
-export const REPORT_VERSION = 4;
+export const REPORT_VERSION = 6;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -244,19 +244,35 @@ function buckets(period, tz) {
 	}
 }
 
-/** Cost per chart bucket, split into the series projects and OTHER. */
-export function timeline(rows, period, tz, series) {
+/** Cost per chart bucket, split into the series partOf names for each row. */
+export function timeline(rows, period, tz, partOf) {
 	const list = buckets(period, tz).map((b) => ({ ...b, value: 0, parts: new Map() }));
 	const byKey = new Map(list.map((b) => [b.key, b]));
 	for (const r of rows) {
 		const p = localParts(r.hour, tz);
 		const b = byKey.get(period.kind === "daily" ? String(p.h) : byMonth(period) ? monthKey(p) : dateKey(p));
 		if (!b) continue;
-		const s = series.includes(r.project) ? r.project : OTHER;
+		const s = partOf(r);
 		b.value += r.cost;
 		b.parts.set(s, (b.parts.get(s) ?? 0) + r.cost);
 	}
 	return list;
+}
+
+// Providers that offer a subscription login in omp; their pay-per-token use goes through an API key.
+const SUBSCRIPTION_PROVIDERS = new Set(["anthropic", "openai"]);
+
+/**
+ * Billing of a row as far as the logs show it: `subscription` for GitHub Copilot and for a login
+ * omp pinned (OAuth), `token API` for providers without subscription logins (pay per token), and
+ * `login not recorded` for an unpinned row of a subscription provider, which is either an API key
+ * or a log written before omp recorded logins.
+ */
+export function billingOf(r) {
+	if (r.provider === "github-copilot") return "github-copilot · subscription";
+	if (r.provider === "unknown") return "provider not recorded";
+	if (!r.account.startsWith("unpinned:")) return `${r.provider} · subscription`;
+	return SUBSCRIPTION_PROVIDERS.has(r.provider) ? `${r.provider} · login not recorded` : `${r.provider} · token API`;
 }
 
 /** Cost per local weekday (0 = Monday) and hour. */
@@ -274,10 +290,11 @@ function topSessions(rows, labelOf) {
 	for (const r of rows) {
 		const s =
 			m.get(r.sessionId) ??
-			m.set(r.sessionId, { id: r.sessionId, title: "", project: r.project, value: 0, requests: 0, hours: new Set(), accounts: new Set() }).get(r.sessionId);
+			m.set(r.sessionId, { id: r.sessionId, title: "", project: r.project, value: 0, requests: 0, first: r.hour, hours: new Set(), accounts: new Set() }).get(r.sessionId);
 		if (!s.title || r.agent === "main") s.title = r.title || s.title;
 		s.value += r.cost;
 		s.requests += r.requests;
+		s.first = Math.min(s.first, r.hour);
 		s.hours.add(r.hour);
 		s.accounts.add(labelOf(r.account));
 	}
@@ -401,6 +418,7 @@ export function digest({ period, rows, limits, labels, tz, now, generator, hasNe
 	const series = projects.slice(0, TOP_SERIES).map((p) => p.name);
 	const features = sumBy(current, (r) => r.feature);
 	const seen = lastSeen(rows, limits);
+	const subagents = `subagents (${new Set(current.filter((r) => r.agent !== "main").map((r) => r.agent)).size} names)`;
 	return {
 		period,
 		dataEnd: window.end,
@@ -413,12 +431,15 @@ export function digest({ period, rows, limits, labels, tz, now, generator, hasNe
 		totals: totals(current),
 		// The all-time report has nothing to compare with.
 		previousTotals: previous && totals(rows.filter(within({ start: previous.start, end: Math.min(previous.end, previous.start + window.end - window.start) }))),
-		accounts: accountViews(rows, limits, window, now, labelOf),
+		accounts: accountViews(rows, limits, window, now, labelOf).map((a) => ({ ...a, timeline: timeline(current.filter((r) => r.account === a.id), period, tz, () => a.label) })),
 		firstSnapshot: limits.reduce((m, s) => Math.min(m, s.recordedAt), Number.POSITIVE_INFINITY),
 		projects,
 		accountNames: [...new Set(projects.flatMap((p) => [...p.parts.keys()]))],
 		series,
-		timeline: timeline(current, period, tz, series),
+		timeline: timeline(current, period, tz, (r) => (series.includes(r.project) ? r.project : OTHER)),
+		// Lines with no cost (a local model) are left out.
+		billing: sumBy(current, billingOf).filter((b) => b.value > 0).map((b) => b.name),
+		billingTimeline: timeline(current, period, tz, billingOf),
 		heatmap: period.kind === "daily" ? undefined : heatmap(current, tz),
 		weeks: period.kind === "monthly" ? sumBy(current, (r) => periodOf("weekly", r.hour, tz).key).sort((a, b) => a.name.localeCompare(b.name)) : undefined,
 		days: byMonth(period) ? new Map(sumBy(current, (r) => dateKey(localParts(r.hour, tz))).map((x) => [x.name, x.value])) : undefined,
@@ -427,7 +448,8 @@ export function digest({ period, rows, limits, labels, tz, now, generator, hasNe
 		automatic: features.filter((f) => !isUser(f.name)).reduce((s, f) => s + f.value, 0),
 		// Providers name the same model differently (anthropic claude-opus-4-8, github-copilot claude-opus-4.8) and bill it apart.
 		models: sumBy(current, (r) => `${r.provider}/${r.model}`),
-		agents: sumBy(current, (r) => r.agent),
+		// Subagent names are per task (hundreds, each used once), so they are counted, not listed.
+		agents: sumBy(current, (r) => (r.agent === "main" ? "main sessions" : subagents)),
 		tokenMix: tokenMix(current),
 		devices: [...seen.keys()].sort().map((name) => ({ name, cost: current.filter((r) => r.device === name).reduce((s, r) => s + r.cost, 0), lastSeen: seen.get(name) })),
 	};

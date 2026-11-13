@@ -7,7 +7,7 @@
  * was rendered from other data (digest.mjs, page.mjs) and pushes those. `--loop` repeats hourly
  * (the `usagesync` fish function runs it that way);
  * `--no-git` stops after writing; `--backfill` re-reads all session logs and all limit history
- * this device still has (merged by key, so safe to repeat).
+ * this device still has (a re-read session replaces its stored rows, so safe to repeat).
  *
  * Config `~/.pi/usage/config.json`:
  * `{ "repo": "~/github/agent-usage", "device": "<optional name>", "timezone": "<optional, default Europe/Berlin>" }`.

@@ -76,8 +76,10 @@ async function gather(exec: Exec, now: number) {
 	const stored = readRepo(config.repo, { since });
 	const own = stored.rows.filter((r) => r.device === config.device);
 	const others = stored.rows.filter((r) => r.device !== config.device);
-	// DEV-NOTE: this device's stored rows keep hours whose logs were pruned; live rows replace the rest.
-	const rows = [...others, ...mergeByKey(own, liveRows.map((r: object) => ({ ...r, device: config.device })), rowKey)];
+	// DEV-NOTE: this device's stored rows keep sessions whose logs were pruned; a session read live replaces all its stored rows (as writeRows does).
+	const liveSessions = new Set(liveRows.map((r: { sessionId: string }) => r.sessionId));
+	const kept = own.filter((r) => !liveSessions.has(r.sessionId));
+	const rows = [...others, ...mergeByKey(kept, liveRows.map((r: object) => ({ ...r, device: config.device })), rowKey)];
 	const devices = [...new Set(rows.map((r) => r.device))].join(", ");
 	return {
 		rows,

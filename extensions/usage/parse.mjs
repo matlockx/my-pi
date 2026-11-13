@@ -49,10 +49,10 @@ export function accountHash(provider, identity) {
 		.digest("hex");
 }
 
-/** Feature named by a user message: an extension prompt, a slash command, or `user`. */
+/** Feature named by a user message: an extension prompt, a slash command, or `user`. A path (`/Users/me/x`) is no command. */
 export function promptFeature(text) {
 	for (const [prefix, feature] of PROMPT_FEATURES) if (text.startsWith(prefix)) return feature;
-	const command = /^\/([\w:-]+)/.exec(text);
+	const command = /^\/([\w:-]+)(?=\s|$)/.exec(text);
 	return command ? `command:/${command[1]}` : "user";
 }
 
@@ -256,15 +256,14 @@ function roundRow(r) {
 }
 
 /**
- * Parses every log below sessionsDir modified at or after sinceMs and returns their hourly rows.
- * Files are read in path order; one that vanishes or cannot be read while the scan runs is
- * skipped and counted.
+ * Parses every session with a log below sessionsDir modified at or after sinceMs and returns their
+ * hourly rows. A session is read whole: its main log and every subagent log, so its rows are
+ * complete (store.mjs `writeRows` relies on that). A session with a log that vanishes or cannot be
+ * read while the scan runs is left out entirely and its files are counted as skipped.
  *
  * @returns {Promise<{rows: any[], files: number, skipped: number}>}
  */
 export async function scanSessions(sessionsDir, sinceMs = 0) {
-	const logs = [];
-	let skipped = 0;
 	let paths = [];
 	try {
 		paths = readdirSync(sessionsDir, { recursive: true })
@@ -275,15 +274,28 @@ export async function scanSessions(sessionsDir, sinceMs = 0) {
 	} catch {
 		return { rows: [], files: 0, skipped: 0 };
 	}
+	const files = [];
+	const touched = new Set();
+	const broken = new Set();
 	for (const path of paths) {
 		const id = logIdentity(sessionsDir, path);
 		if (!id) continue;
+		files.push({ path, ...id });
 		try {
-			if (statSync(path).mtimeMs < sinceMs) continue;
-			logs.push({ path, ...id, parsed: await parseFile(path) });
+			if (statSync(path).mtimeMs >= sinceMs) touched.add(id.sessionId);
 		} catch {
-			skipped++;
+			broken.add(id.sessionId);
 		}
 	}
-	return { rows: hourlyRows(logs), files: logs.length, skipped };
+	const logs = [];
+	for (const file of files.filter((f) => touched.has(f.sessionId))) {
+		if (broken.has(file.sessionId)) continue;
+		try {
+			logs.push({ ...file, parsed: await parseFile(file.path) });
+		} catch {
+			broken.add(file.sessionId);
+		}
+	}
+	const complete = logs.filter((l) => !broken.has(l.sessionId));
+	return { rows: hourlyRows(complete), files: complete.length, skipped: files.filter((f) => broken.has(f.sessionId)).length };
 }

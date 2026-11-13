@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, reportPeriods, timeAbove } from "./digest.mjs";
+import { billingOf, digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, reportPeriods, timeAbove } from "./digest.mjs";
 import { HOUR_MS } from "./parse.mjs";
 
 const TZ = "Europe/Berlin";
@@ -117,6 +117,26 @@ test("digest sums the period, splits automation, drops idle limits and flags unl
 			{ name: "github-copilot/m", value: 1 },
 		],
 		"one model name at two providers stays two rows",
+	);
+	const mixed = digest({ period, rows: [row(9, "user", 2), { ...row(10, "user", 1), agent: "Scout" }, { ...row(11, "user", 1), agent: "Fixer" }], limits: [], labels: {}, tz: TZ, now: period.end, generator: "a" });
+	assert.deepEqual(
+		mixed.agents,
+		[
+			{ name: "main sessions", value: 2 },
+			{ name: "subagents (2 names)", value: 2 },
+		],
+		"per-task subagent names are counted, not listed",
+	);
+	assert.equal(mixed.sessions[0].first, period.start + 9 * HOUR_MS, "a session starts at its first hour");
+	assert.deepEqual(
+		[
+			{ provider: "anthropic", account: "6189" },
+			{ provider: "anthropic", account: "unpinned:anthropic" },
+			{ provider: "github-copilot", account: "unpinned:github-copilot" },
+			{ provider: "amazon-bedrock", account: "unpinned:amazon-bedrock" },
+			{ provider: "unknown", account: "unpinned:unknown" },
+		].map(billingOf),
+		["anthropic · subscription", "anthropic · login not recorded", "github-copilot · subscription", "amazon-bedrock · token API", "provider not recorded"],
 	);
 	const [mine, other] = d.accounts;
 	assert.deepEqual([mine.label, mine.labelled, mine.limits.map((l) => [l.id, l.peak])], ["anthropic: me", true, [["5h", 0.6]]]);

@@ -69,8 +69,9 @@ export function mergeByKey(stored, fresh, keyOf) {
  * @param {any[]} items
  * @param {(item: any) => number} timeOf Time that picks the day file.
  * @param {(item: any) => string} keyOf
+ * @param {(stored: any) => boolean} [replaced] Stored items of a touched day file to drop before the merge.
  */
-function mergeDays(dir, items, timeOf, keyOf) {
+function mergeDays(dir, items, timeOf, keyOf, replaced = () => false) {
 	const byDay = new Map();
 	for (const item of items) {
 		const day = dayOf(timeOf(item));
@@ -81,7 +82,11 @@ function mergeDays(dir, items, timeOf, keyOf) {
 		mkdirSync(dir, { recursive: true });
 		const path = join(dir, `${day}.jsonl`);
 		const before = existsSync(path) ? readFileSync(path, "utf8") : "";
-		const text = mergeByKey(readJsonl(path), fresh, keyOf)
+		const text = mergeByKey(
+			readJsonl(path).filter((i) => !replaced(i)),
+			fresh,
+			keyOf,
+		)
 			.map((i) => `${JSON.stringify(i)}\n`)
 			.join("");
 		if (text === before) continue;
@@ -93,7 +98,9 @@ function mergeDays(dir, items, timeOf, keyOf) {
 
 /**
  * Stores hourly rows for a device. Title and project pass through the secret redactor first,
- * because both leave the machine.
+ * because both leave the machine. The rows of each session in `rows` replace all its stored rows,
+ * so callers must pass every row of each session they pass (parse.mjs `scanSessions` reads a
+ * session whole); a session absent from `rows` keeps its stored rows.
  */
 export function writeRows(deviceDir, rows) {
 	const clean = rows.map((r) => ({
@@ -101,7 +108,9 @@ export function writeRows(deviceDir, rows) {
 		title: redactString(r.title ?? "").text,
 		project: redactString(r.project ?? "").text,
 	}));
-	return mergeDays(join(deviceDir, "hourly"), clean, (r) => r.hour, rowKey);
+	// DEV-NOTE: replacing by session, not by row key, drops rows whose key changed since they were stored (a re-classified feature).
+	const sessions = new Set(clean.map((r) => r.sessionId));
+	return mergeDays(join(deviceDir, "hourly"), clean, (r) => r.hour, rowKey, (stored) => sessions.has(stored.sessionId));
 }
 
 /** Stores limit snapshots for a device. */

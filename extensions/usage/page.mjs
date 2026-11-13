@@ -74,6 +74,8 @@ const KPIS = [
 	{ label: "Active hours", get: (t) => t.activeHours, fmt: String },
 	{ label: "Output tokens", get: (t) => t.output, fmt: compact },
 	{ label: "Cache hit", get: (t) => t.cacheHit, fmt: (v) => pct(v, 1), up: "good", points: true },
+	// Copilot's meter; its API-equivalent cost above says nothing about it. Shown only when used.
+	{ label: "Copilot premium requests", get: (t) => t.premium, fmt: (v) => String(Math.round(v)), up: "warn", optional: true },
 ];
 
 function delta(k, a, b) {
@@ -89,7 +91,7 @@ function kpis(d) {
 	const before = { daily: "the day before", weekly: "the week before", monthly: "the month before", yearly: "the year before" }[d.period.kind];
 	const word = d.period.cutoff ? `by this point ${before}` : before;
 	const since = `since ${new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, day: "numeric", month: "short", year: "numeric" }).format(d.period.start)}`;
-	return `<section class="kpis">${KPIS.map((k) => {
+	return `<section class="kpis">${KPIS.filter((k) => !k.optional || k.get(d.totals) > 0 || (d.previousTotals && k.get(d.previousTotals) > 0)).map((k) => {
 		const a = k.get(d.totals);
 		// The all-time report has no period before it.
 		const foot = d.previousTotals ? `${delta(k, a, k.get(d.previousTotals))}<span>${k.fmt(k.get(d.previousTotals))} ${word}</span>` : `<span>${since}</span>`;
@@ -142,22 +144,22 @@ function featuresCard(d) {
 
 // --- Time charts (SVG)
 
-function columns(d) {
+/** Stacked columns of a timeline; series name the colours, anything else is OTHER. */
+function columns(list, series, kind, { height = 260, label = "Cost over time" } = {}) {
 	const W = 1000;
-	const H = 260;
+	const H = height;
 	const [L, R, T, B] = [52, 8, 14, 28];
-	const list = d.timeline;
 	const top = niceMax(Math.max(0, ...list.map((b) => b.value)));
 	const slot = (W - L - R) / list.length;
 	const y = (v) => T + (1 - v / top) * (H - T - B);
-	const names = [...d.series, OTHER];
+	const names = [...series, OTHER];
 	const out = [];
-	for (let i = 0; i <= 4; i++) {
+	for (let i = 0; i <= 4; i += height < 200 ? 2 : 1) {
 		const v = (top * i) / 4;
 		const tick = top >= 10 ? `$${Math.round(v).toLocaleString("en-US")}` : money(v);
 		out.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${tick}</text>`);
 	}
-	const every = list.length > 24 ? 2 : d.period.kind === "daily" ? 3 : 1;
+	const every = list.length > 24 ? 2 : kind === "daily" ? 3 : 1;
 	list.forEach((b, i) => {
 		const x = L + i * slot + slot * 0.14;
 		const w = slot * 0.72;
@@ -166,20 +168,61 @@ function columns(d) {
 		for (const name of names) {
 			const v = b.parts.get(name) ?? 0;
 			if (v <= 0) continue;
-			out.push(`<rect class="${seriesClass(d.series, name)}" x="${x.toFixed(1)}" y="${y(base + v).toFixed(1)}" width="${w.toFixed(1)}" height="${(y(base) - y(base + v)).toFixed(1)}" rx="1.5"><title>${esc(b.label)} · ${esc(name)}: ${money(v)}</title></rect>`);
+			out.push(`<rect class="${seriesClass(series, name)}" x="${x.toFixed(1)}" y="${y(base + v).toFixed(1)}" width="${w.toFixed(1)}" height="${(y(base) - y(base + v)).toFixed(1)}" rx="1.5"><title>${esc(b.label)} · ${esc(name)}: ${money(v)}</title></rect>`);
 			base += v;
 		}
-		if (b.value > 0 && list.length <= 24 && d.period.kind !== "daily") out.push(`<text class="val" x="${(x + w / 2).toFixed(1)}" y="${(y(b.value) - 5).toFixed(1)}" text-anchor="middle">${money(b.value)}</text>`);
+		if (b.value > 0 && list.length <= 24 && kind !== "daily" && height >= 200) out.push(`<text class="val" x="${(x + w / 2).toFixed(1)}" y="${(y(b.value) - 5).toFixed(1)}" text-anchor="middle">${money(b.value)}</text>`);
 		if (i % every === 0) out.push(`<text class="axis" x="${(x + w / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(b.label)}</text>`);
 	});
-	return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost over time">${out.join("")}</svg>`;
+	return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${out.join("")}</svg>`;
+}
+
+/** One line per series across the timeline buckets, plus a total line. */
+function lines(list, series, kind) {
+	const W = 1000;
+	const H = 260;
+	const [L, R, T, B] = [52, 14, 14, 28];
+	const top = niceMax(Math.max(0, ...list.map((b) => b.value)));
+	const step = (W - L - R) / Math.max(1, list.length - 1);
+	const x = (i) => L + i * step;
+	const y = (v) => T + (1 - v / top) * (H - T - B);
+	const out = [];
+	for (let i = 0; i <= 4; i++) {
+		const v = (top * i) / 4;
+		const tick = top >= 10 ? `$${Math.round(v).toLocaleString("en-US")}` : money(v);
+		out.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${tick}</text>`);
+	}
+	const every = list.length > 24 ? 2 : kind === "daily" ? 3 : 1;
+	list.forEach((b, i) => {
+		// The first and last points sit on the chart edges, so their labels grow inwards.
+		const anchor = i === 0 ? "start" : i === list.length - 1 ? "end" : "middle";
+		if (i % every === 0 || i === list.length - 1) out.push(`<text class="axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="${anchor}">${esc(b.label)}</text>`);
+	});
+	const draw = (name, cls, valueOf) => {
+		const pts = list.map((b, i) => `${x(i).toFixed(1)},${y(valueOf(b)).toFixed(1)}`).join(" L");
+		out.push(`<path class="line ${cls}" d="M${pts}"/>`);
+		list.forEach((b, i) => out.push(`<circle class="dot ${cls}" cx="${x(i).toFixed(1)}" cy="${y(valueOf(b)).toFixed(1)}" r="5"><title>${esc(b.label)} · ${esc(name)}: ${money(valueOf(b))}</title></circle>`));
+	};
+	series.forEach((name, i) => draw(name, `s${i % 6}`, (b) => b.parts.get(name) ?? 0));
+	if (series.length > 1) draw("Total", "total", (b) => b.value);
+	return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost by billing">${out.join("")}</svg>`;
 }
 
 function timeCard(d) {
 	if (!d.totals.requests) return "";
 	const what = d.period.kind === "daily" ? "Cost per hour" : isLong(d) ? "Cost per month" : "Cost per day";
 	const how = d.period.kind === "daily" ? "local hours" : isLong(d) ? "local months" : "weekends shaded";
-	return card(what, `Split by the top projects; ${how}, ${esc(d.tz)}.`, legend([...d.series, OTHER]) + columns(d));
+	return card(what, `Split by the top projects; ${how}, ${esc(d.tz)}.`, legend([...d.series, OTHER]) + columns(d.timeline, d.series, d.period.kind));
+}
+
+function billingCard(d) {
+	if (!d.billing.length) return "";
+	const keys = `<div class="legend">${d.billing.map((n, i) => `<span><i class="sw s${i % 6}"></i>${esc(n)}</span>`).join("")}${d.billing.length > 1 ? `<span><i class="sw total"></i>Total</span>` : ""}</div>`;
+	return card(
+		"Cost by provider and billing",
+		"Subscription: a login omp recorded (OAuth) or GitHub Copilot. Token API: a provider billed per token. Login not recorded: an API key, or a log written before omp recorded logins.",
+		keys + lines(d.billingTimeline, d.billing, d.period.kind),
+	);
 }
 
 function heatCell(v, max, title) {
@@ -230,6 +273,10 @@ function dayGridCard(d) {
 			cells.push(`<i style="background:color-mix(in srgb, var(--accent) ${level}%, var(--cell))" title="${key}: ${money(v)}"></i>`);
 		}
 	}
+	// A label needs three columns of room: a month cut short at the left edge yields to the next one.
+	months.forEach((m, i) => {
+		if (m && months.slice(i + 1, i + 3).some(Boolean)) months[i] = "";
+	});
 	const [busiest] = [...d.days].sort((a, b) => b[1] - a[1]);
 	const [y, m, day] = [...d.days.keys()].sort()[0].split("-").map(Number);
 	const span = Math.round((Math.min(d.period.end, d.dataEnd) - localMidnight(y, m, day, d.tz)) / 86_400_000);
@@ -323,33 +370,28 @@ function labelHint(a) {
 	return `<p class="note"><b>${esc(a.label)} has no name.</b> No device is logged in to this account in omp any more, so the sync cannot name it. Log in to it again in omp on any Mac (the next sync names it and adds the limit history omp kept), or name it in <code>accounts.json</code> at the root of the usage repository: <code>{ "${esc(a.id)}": "anthropic: you@example.com" }</code>.</p>`;
 }
 
+function noLimits(a, d) {
+	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, day: "numeric", month: "short", year: "numeric" }).format(ms);
+	if (!(d.firstSnapshot < d.dataEnd))
+		return Number.isFinite(d.firstSnapshot) ? `No limit snapshots exist yet for this period: the oldest in the repository is from ${day(d.firstSnapshot)}.` : "No limit snapshots in the repository yet.";
+	if (a.id.startsWith("unpinned:")) return "No limits: omp did not record which login these requests used, so they belong to no subscription.";
+	return "No limit snapshots for this account in this period.";
+}
+
 function accountBlock(a, d) {
-	// A month or more of 5-hour windows is a wall of spikes; long charts keep the long windows, the chips keep the 5-hour figures.
-	const charted = d.period.kind === "monthly" || isLong(d) ? a.limits.filter((l) => l.duration >= 24 * 3_600_000) : a.limits;
-	const chart = charted.length ? limitChart(charted, d) : "";
-	return `<div class="account"><div class="account-head"><h3>${esc(a.label)}</h3><span>${money(a.cost)} · ${compact(a.requests)} requests</span></div>${a.labelled ? "" : labelHint(a)}<div class="chips">${a.limits.flatMap((l) => limitChips(l, d.tz)).join("")}</div>${chart}</div>`;
+	// A month or more of 5-hour windows is a wall of spikes; long charts keep the long windows (and Copilot's monthly one, whose length is unknown), the chips keep the 5-hour figures.
+	const charted = d.period.kind === "monthly" || isLong(d) ? a.limits.filter((l) => !(l.duration < 24 * 3_600_000)) : a.limits;
+	const limits = a.limits.length ? `<div class="chips">${a.limits.flatMap((l) => limitChips(l, d.tz)).join("")}</div>${charted.length ? limitChart(charted, d) : ""}` : `<p class="muted">${noLimits(a, d)}</p>`;
+	const unpinned = a.id.startsWith("unpinned:") ? `<p class="muted small">“login not recorded”: requests from an API key, or from session logs written before omp recorded which login a session used.</p>` : "";
+	const unit = d.period.kind === "daily" ? "hour" : isLong(d) ? "month" : "day";
+	const cost = a.cost > 0 ? `<h3 class="minor">Cost per ${unit}</h3>${columns(a.timeline, [a.label], d.period.kind, { height: 150, label: `Cost of ${a.label}` })}` : "";
+	return `<div class="account"><div class="account-head"><h3>${esc(a.label)}</h3><span>${money(a.cost)} · ${compact(a.requests)} requests</span></div>${a.labelled ? "" : labelHint(a)}${limits}${unpinned}${cost}</div>`;
 }
 
 function limitsCard(d) {
-	const charted = d.accounts.filter((a) => a.limits.length);
-	const others = d.accounts.filter((a) => !a.limits.length && a.cost > 0);
-	if (!charted.length && !others.length) return "";
-	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, day: "numeric", month: "short", year: "numeric" }).format(ms);
-	let missing = "";
-	if (others.length) {
-		let lead = "No limit snapshots for";
-		if (!charted.length && !(d.firstSnapshot < d.dataEnd))
-			lead = Number.isFinite(d.firstSnapshot)
-				? `No limit snapshots exist yet for this period: the oldest in the repository is from ${day(d.firstSnapshot)}. Cost per account`
-				: "No limit snapshots in the repository yet. Cost per account";
-		else if (!charted.length) lead = "No limit snapshots in this period for";
-		const names = others.map((a) => `<b>${esc(a.label)}</b> ${money(a.cost)}`).join(" · ");
-		const unpinned = others.some((a) => a.id.startsWith("unpinned:"))
-			? `<p class="muted small">“login not recorded”: requests from session logs written before omp recorded which login a session used.</p>`
-			: "";
-		missing = `<div class="account"><p class="muted">${lead}: ${names}</p>${unpinned}${others.filter((a) => !a.labelled).map(labelHint).join("")}</div>`;
-	}
-	return card("Limits", "How full each subscription limit got. Pace projects the window's average rate so far to its reset.", charted.map((a) => accountBlock(a, d)).join("") + missing);
+	const shown = d.accounts.filter((a) => a.limits.length || a.cost > 0);
+	if (!shown.length) return "";
+	return card("Accounts", "Limits and cost per account. Pace projects the window's average rate so far to its reset.", shown.map((a) => accountBlock(a, d)).join(""));
 }
 
 // --- Sessions and efficiency
@@ -359,7 +401,7 @@ function sessionsCard(d) {
 	const max = d.sessions[0].value || 1;
 	const rows = d.sessions
 		.map(
-			(s) => `<tr><td><div class="title">${esc(plain(s.title))}</div><div class="sub">${esc(s.accounts.join(", "))}</div></td><td>${esc(s.project)}</td><td class="num">${s.hours}</td><td class="num">${compact(s.requests)}</td><td class="num">${money(s.requests ? s.value / s.requests : 0)}</td><td class="costcell"><div class="mini"><span style="width:${((s.value / max) * 100).toFixed(1)}%"></span></div><b>${money(s.value)}</b></td></tr>`,
+			(s) => `<tr><td><div class="title">${esc(plain(s.title))}</div><div class="sub">from ${esc(clock(s.first, d.tz))} · #${esc(s.id.slice(-8))} · ${esc(s.accounts.join(", "))}</div></td><td>${esc(s.project)}</td><td class="num">${s.hours}</td><td class="num">${compact(s.requests)}</td><td class="num">${money(s.requests ? s.value / s.requests : 0)}</td><td class="costcell"><div class="mini"><span style="width:${((s.value / max) * 100).toFixed(1)}%"></span></div><b>${money(s.value)}</b></td></tr>`,
 		)
 		.join("");
 	return card(
@@ -411,7 +453,7 @@ a{color:inherit}.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 48px}
 .hero .eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:12px;opacity:.8}.hero h1{margin:6px 0 8px;font-size:34px;line-height:1.15;letter-spacing:-.02em}
 .hero nav{display:flex;gap:10px;flex-wrap:wrap;font-size:13px}.hero nav a,.hero nav span{background:#ffffff22;border:1px solid #ffffff33;padding:4px 11px;border-radius:999px;text-decoration:none}
 .hero nav a:hover{background:#ffffff38}
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin:18px 0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:18px 0}
 .kpi,.card{background:var(--card);border:1px solid var(--border);border-radius:18px;box-shadow:0 1px 2px #0000000a,0 8px 24px -18px #1e1b4b40}
 .kpi{padding:16px 16px 14px}.kpi-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
 .kpi-value{font-size:27px;font-weight:700;letter-spacing:-.02em;margin:4px 0 6px;font-variant-numeric:tabular-nums}.kpi-foot{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}
@@ -422,7 +464,8 @@ a{color:inherit}.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 48px}
 .legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--muted);margin:2px 0 10px}.sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
 .s0{background:var(--c0);fill:var(--c0);stroke:var(--c0)}.s1{background:var(--c1);fill:var(--c1);stroke:var(--c1)}.s2{background:var(--c2);fill:var(--c2);stroke:var(--c2)}
 .s3{background:var(--c3);fill:var(--c3);stroke:var(--c3)}.s4{background:var(--c4);fill:var(--c4);stroke:var(--c4)}.s5{background:var(--c5);fill:var(--c5);stroke:var(--c5)}.so{background:var(--co);fill:var(--co);stroke:var(--co)}
-.sw.full{background:color-mix(in srgb,var(--bad) 30%,transparent)}
+.sw.full{background:color-mix(in srgb,var(--bad) 30%,transparent)}.sw.total{background:var(--fg)}
+.chart .line.total{stroke:var(--fg);stroke-width:3;stroke-dasharray:7 4}.chart .dot.total{fill:var(--fg)}
 .bars{display:grid;gap:7px}.bar-row{display:grid;grid-template-columns:minmax(90px,190px) 1fr 72px;gap:12px;align-items:center;font-size:13.5px}
 .bar-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar-track{display:flex;height:14px;border-radius:7px;background:var(--cell);overflow:hidden}
 .bar-value{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}.seg{height:100%;display:block}.seg+.seg{box-shadow:-1px 0 0 var(--card)}
@@ -431,7 +474,7 @@ a{color:inherit}.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 48px}
 .chart .weekend{fill:var(--cell);opacity:.7}.chart .line{fill:none;stroke-width:2.5;stroke-linejoin:round}.chart .area{opacity:.12;stroke:none}.chart .dot{opacity:0;stroke:none}.chart .dot:hover{opacity:1}
 .chart .warnline{stroke:var(--warn);stroke-dasharray:5 5;opacity:.7}.chart .full{fill:var(--bad);opacity:.16}
 .account+.account{margin-top:22px;padding-top:20px;border-top:1px dashed var(--border)}.account-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
-.account h3{margin:0 0 8px;font-size:15.5px}.account-head span{color:var(--muted);font-size:13px}
+.account h3{margin:0 0 8px;font-size:15.5px}.account-head span{color:var(--muted);font-size:13px}.account h3.minor{font-size:12px;margin:16px 0 4px}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 12px}.chip{border:1px solid var(--border);background:var(--cell);border-radius:12px;padding:6px 11px;font-size:12.5px;display:flex;gap:8px;align-items:baseline}
 .chip span{color:var(--muted)}.chip b{font-variant-numeric:tabular-nums}.chip em{color:var(--muted);font-style:normal;font-size:11.5px}
 .chip.good{border-color:color-mix(in srgb,var(--good) 40%,transparent)}.chip.good b{color:var(--good)}.chip.warn{border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:color-mix(in srgb,var(--warn) 9%,var(--card))}.chip.warn b{color:var(--warn)}
@@ -460,8 +503,8 @@ footer{margin-top:8px;font-size:12.5px;color:var(--muted)}footer p{max-width:820
 .index li a:hover{background:var(--cell)}.index li a span{color:var(--muted);font-size:12.5px}
 a.alltime{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:18px;padding:20px 24px;text-decoration:none}a.alltime:hover{border-color:var(--accent)}
 a.alltime b{font-size:18px}a.alltime span{color:var(--muted);font-size:13.5px}a.alltime em{font-style:normal;color:var(--accent);font-weight:650;white-space:nowrap}
-@media (max-width:960px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2,.grid3{grid-template-columns:1fr}.index{grid-template-columns:repeat(2,1fr)}}
-@media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.hero h1{font-size:26px}.bar-row{grid-template-columns:110px 1fr 64px}}
+@media (max-width:960px){.grid2,.grid3{grid-template-columns:1fr}.index{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:560px){.hero h1{font-size:26px}.bar-row{grid-template-columns:110px 1fr 64px}}
 `;
 
 function shell(title, body, hash) {
@@ -492,6 +535,7 @@ export function renderReport(d, hash) {
 		kpis(d),
 		limitsCard(d),
 		timeCard(d),
+		billingCard(d),
 		`<div class="grid2 row">${projectsCard(d)}${featuresCard(d)}</div>`,
 		isLong(d) ? dayGridCard(d) : "",
 		d.period.kind === "daily" ? "" : `<div class="grid2 row">${heatmapCard(d)}${d.period.kind === "monthly" ? calendarCard(d) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,

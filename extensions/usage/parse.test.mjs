@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { HOUR_MS, accountHash, hourlyRows, logIdentity, parseEntries } from "./parse.mjs";
+import { HOUR_MS, accountHash, hourlyRows, logIdentity, parseEntries, promptFeature, scanSessions } from "./parse.mjs";
 
 const T0 = Date.parse("2026-11-13T10:00:00.000Z");
 const at = (min) => new Date(T0 + min * 60_000).toISOString();
@@ -50,6 +52,35 @@ test("a run takes the feature of the message that started it, through every tool
 		runs.map(([, f]) => f),
 		["user", "quick-review-fix", "jflow-watch", "command:/skill-install"],
 	);
+});
+
+test("a slash command needs a space or the end after its name; a pasted path is a plain prompt", () => {
+	assert.equal(promptFeature("/review the diff"), "command:/review");
+	assert.equal(promptFeature("/skill:plan"), "command:/skill:plan");
+	assert.equal(promptFeature("/Users/me/projects/x/notes.md why does this fail?"), "user");
+	assert.equal(promptFeature("/ordner/datei"), "user");
+});
+
+test("a session touched since the cutoff is read whole, its untouched subagent logs included", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "usage-scan-"));
+	const id = "01a1a136-b5fd-77f9-8e1d-040fb9157988";
+	const lines = (...entries) => entries.map((e) => JSON.stringify(e)).join("\n");
+	mkdirSync(join(dir, "-shop", `2026-11-13T10-00-00-000Z_${id}`), { recursive: true });
+	const main = join(dir, "-shop", `2026-11-13T10-00-00-000Z_${id}.jsonl`);
+	const sub = join(dir, "-shop", `2026-11-13T10-00-00-000Z_${id}`, "Scout.jsonl");
+	writeFileSync(main, lines(header(), user(1, "go"), reply(2, 1)));
+	writeFileSync(sub, lines(header(3), reply(4, 2)));
+	const old = new Date(T0 - 10 * 24 * HOUR_MS);
+	utimesSync(sub, old, old);
+	const scan = await scanSessions(dir, T0 - HOUR_MS);
+	assert.deepEqual(
+		scan.rows.map((r) => [r.agent, r.cost]).sort(),
+		[
+			["Scout", 2],
+			["main", 1],
+		],
+	);
+	assert.equal((await scanSessions(dir, T0 + 24 * HOUR_MS)).rows.length, 0, "nothing touched: nothing read");
 });
 
 test("side requests are attributed by purpose and fall back to the current model", () => {

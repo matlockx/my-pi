@@ -60,8 +60,10 @@ merged through a private GitHub repository without merge conflicts.
 
 Session logs already hold every request with provider, model, usage and account pin, so no live hook is
 needed and history back-fills for free. One parser turns logs into hourly rows. Each device writes only
-its own directory in the repo, and rewrites are merge-by-key, so `git pull --rebase` never conflicts on
-data and re-runs never double rows. The agent tool reads other devices from the checkout and this
+its own directory in the repo, and a re-read session replaces all its stored rows (snapshots merge by
+key), so `git pull --rebase` never conflicts on data, re-runs never double rows, and a row whose key
+changed (a re-classified feature) does not stay beside its replacement. A session with a log changed
+since the cutoff is read whole, subagent logs included. The agent tool reads other devices from the checkout and this
 device live from its own logs, so the current hour is always included.
 
 Repository layout:
@@ -110,8 +112,8 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
 - [x] **Phase 3 — Host collector and sync**
   - Files: `extensions/usage/collect.mjs`, `extensions/usage/collect.test.mjs`,
     `fish/functions/usagesync.fish`, `bin/my-pi-start`, `setup.fish`
-  - Change: `collect.mjs` reads `~/.pi/usage/config.json`, parses every log on the first run and logs
-    modified in the last 2 days afterwards, labels accounts and stores snapshots from `omp usage --json`
+  - Change: `collect.mjs` reads `~/.pi/usage/config.json`, parses every session on the first run and
+    sessions with a log modified in the last 2 days afterwards, labels accounts and stores snapshots from `omp usage --json`
     and `omp usage --history --json --days 3650|3` (all history on the first run; joined to accounts
     by provider, accountId, e-mail), gives unpinned rows the provider's account when the device has
     exactly one, writes the device directory, then commits, `git pull --rebase`, pushes (`-u` on the
@@ -166,7 +168,7 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
   - Rebuild: each page stores `inputHash` (digest.mjs) in `<meta name="usage-input">`: a sha256 of
     the rows and snapshots of the previous period and the period up to its cutoff, their accounts'
     labels, the cutoff, whether the next period has a report (the "next →" link beside "← previous"),
-    the time zone and `REPORT_VERSION` (3 since the forward link). A report is written when its file
+    the time zone and `REPORT_VERSION` (bumped with each page change). A report is written when its file
     is missing or the hash differs, so a new device, a backfill, a renamed session, a new label or
     the next period's first report rebuilds exactly the affected reports;
     bumping `REPORT_VERSION` rebuilds all after a page change. The untracked-use median reads windows
@@ -176,19 +178,26 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     drops the report commit (`reset --keep HEAD~1`) and the next run pulls the winner. Devices that
     pulled the same data compute the same hash, so the winner is not rewritten. Real data
     (2026-05-25 to 2026-11-13): the first run writes 204 reports in 0.6 s, a run with no change 0.1 s.
-  - Limits card: accounts with snapshots get chips and a chart; the others share one line with their
-    cost, saying when the oldest snapshot is if the period has none. Rows without a credential pin
-    are labelled "<provider>, login not recorded"; an unnamed account gets both fixes (log in again
-    in omp, or a root `accounts.json` entry).
+  - Accounts card: every account with cost or snapshots gets a block: limit chips and chart (long
+    periods chart the 7-day and Copilot's monthly window), or the reason it has none (no snapshots
+    yet, login not recorded), then its cost per hour, day or month. Rows without a credential pin are
+    labelled "<provider>, login not recorded"; an unnamed account gets both fixes (log in again in
+    omp, or a root `accounts.json` entry).
+  - Billing chart: one line per provider and billing type plus a dashed total. Subscription = a
+    pinned login or GitHub Copilot; token API = a provider without subscription logins; login not
+    recorded = an unpinned Anthropic or OpenAI row (an API key or a log from before pins); lines
+    without cost (local models) are left out.
   - Page: one self-contained HTML file (inline CSS and SVG, no scripts, light and dark themes):
-    KPIs against the previous period; per-account limit chart with peak, time at 90%+ or 100%, pace
-    of 7-day-or-longer windows, and the untracked-use flag; cost over time by top project; projects
-    by account; features with the automatic share; weekday × hour heatmap (weekly, monthly);
-    calendar and ISO-week bars (monthly); top sessions; token kinds with estimated cost shares;
-    models as `provider/model` (Anthropic and Copilot spell the same model differently and bill it
-    apart), agents and devices (single-value mixes collapse to one line); device sync state.
-    `reports/index.html` lists every report.
-  - Verify: `node --test extensions/usage/` (43 pass); reports generated from a copy of the real
+    KPIs against the previous period (plus Copilot premium requests when used, Copilot's own meter);
+    per-account limit chart with peak, time at 90%+ or 100%, pace of 7-day-or-longer windows, and
+    the untracked-use flag; cost over time by top project; projects by account; features with the
+    automatic share; weekday × hour heatmap (weekly, monthly); calendar and ISO-week bars (monthly);
+    top sessions with start time and short session id (titles repeat: 161 sessions have none);
+    token kinds with estimated cost shares; models as `provider/model` (Anthropic and Copilot spell
+    the same model differently and bill it apart), main sessions versus subagents (subagent names are
+    per task, so only counted) and devices (single-value mixes collapse to one line); device sync
+    state. `reports/index.html` lists every report.
+  - Verify: `node --test extensions/usage/` (47 pass); reports generated from a copy of the real
     repository and their charts inspected as rendered SVG. Not run: a full page in a browser (the
     sandbox blocks Chrome), the hourly loop end to end.
 

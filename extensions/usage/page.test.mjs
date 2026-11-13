@@ -58,14 +58,21 @@ test("a running report says how far its data goes, compares by the same point, a
 	assert.doesNotMatch(index, /2026-W44<em/);
 });
 
-test("accounts without limit snapshots share one line that says why, and an unnamed one says how to name it", () => {
+test("every account with cost gets a block with its cost chart and a reason when it has no limits", () => {
 	const hash = "4ba3e6bc9315b1b2b3ea166a5b43e172864b00c2e6befe6e27046b64082b4085";
 	const later = { device: "mac", account: "x", limitId: "5h", recordedAt: period.end + 9 * 24 * HOUR_MS, usedFraction: 0.1 };
 	const html = renderReport(digest({ period, rows: [{ ...row("t", "p"), account: hash }, { ...row("t", "p"), account: "unpinned:anthropic" }], limits: [later], labels: {}, tz: TZ, now: period.end, generator: "mac" }));
 	assert.match(html, /No limit snapshots exist yet for this period: the oldest in the repository is from 18 Nov 2026/);
-	assert.match(html, /anthropic, login not recorded/);
+	assert.match(html, /<h3>anthropic, login not recorded<\/h3>/);
 	assert.match(html, new RegExp(`account 4ba3e6bc has no name\\.</b> No device is logged in to this account in omp any more.*${hash}`));
-	assert.doesNotMatch(html, /No limit use recorded/);
+	assert.equal(html.match(/aria-label="Cost of /g)?.length, 2, "one cost chart per account");
+});
+
+test("the billing chart has a line per provider and billing type and a total line", () => {
+	const html = render([row("t", "p"), { ...row("t", "p"), provider: "github-copilot" }, { ...row("t", "p"), provider: "amazon-bedrock", account: "unpinned:amazon-bedrock" }]);
+	for (const name of ["anthropic · subscription", "github-copilot · subscription", "amazon-bedrock · token API"]) assert.match(html, new RegExp(`<title>Tue 3 · ${name}: \\$4\\.00</title>`), name);
+	assert.match(html, /<title>Tue 3 · Total: \$12\.00<\/title>/);
+	assert.equal(html.match(/<path class="line (s\d|total)"/g)?.length, 4);
 });
 
 test("the previous link needs older data, the next link needs the next period's report", () => {
@@ -86,6 +93,13 @@ test("the all-time report has no comparison or neighbour links, and charts month
 	assert.match(html, /Cost per month/);
 	assert.match(html, /Active on 2 of 39 days since the first active one · busiest 2026-11-03 with \$4\.00/);
 	assert.match(renderIndex({ alltime: ["all"] }), /href="alltime\/all\.html"/);
+});
+
+test("Copilot premium requests show only when used, and a session row names its start and id", () => {
+	assert.doesNotMatch(render([row("t", "p")]), /Copilot premium requests/);
+	const html = render([{ ...row("t", "p"), provider: "github-copilot", premium: 3 }]);
+	assert.match(html, /Copilot premium requests<\/div><div class="kpi-value">3</);
+	assert.match(html, /from Tue 3 Nov, 06:00 · #s1 · account acc/);
 });
 
 test("plain drops icon glyphs, niceMax rounds axis tops up", () => {
