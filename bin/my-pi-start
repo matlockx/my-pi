@@ -6,7 +6,8 @@
 # the MCP guard (my-pi/mcp/guard), their real servers on 18082, 18084 and
 # 18765. The Kubernetes (kubemcp, 127.0.0.1:8085), AWS (awsmcp, 8086) and
 # vcluster (vclustermcp, 8087) MCP servers run as stdio children of their
-# guard and have no port of their own. A server already listening is left alone. Servers listed in
+# guard and have no port of their own. usagesync (hourly usage collection, my-pi/extensions/usage)
+# has no port either; it is tracked by its pid file. A server already listening is left alone. Servers listed in
 # disabledServers of ~/.omp/agent/mcp.json (set by the MCP setup wizard,
 # my-pi/mcp/setup/wizard.mjs) are not started.
 #
@@ -93,6 +94,7 @@ switch "$argv[1]"
         __my_pi_port_stop kubemcp 8085
         __my_pi_port_stop awsmcp 8086
         __my_pi_port_stop vclustermcp 8087
+        usagesync stop
         set -l busy 0
         # Upstream ports too: a guard frees its own port before its server child exits.
         __my_pi_wait_free 8082 ghmcp; or set busy 1
@@ -157,5 +159,6 @@ else if command -q vcluster; and command -q kubectl
 else
     echo "vclustermcp: vcluster or kubectl not on PATH (brew install loft-sh/tap/vcluster kubectl); not started"
 end
+usagesync start; or set failed 1
 
 exit $failed

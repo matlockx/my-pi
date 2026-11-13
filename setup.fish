@@ -97,6 +97,11 @@ else
     end
 end
 
+if not test -f ~/.pi/usage/config.json
+    echo "note: usage tracking is off. To turn it on, create a private repo (e.g. agent-usage), clone it to"
+    echo "      ~/github/agent-usage and write {\"repo\": \"~/github/agent-usage\"} to ~/.pi/usage/config.json"
+end
+
 # Asks per MCP server (GitHub, Jira, jflow) and for the Kubernetes/AWS tiers; installs or
 # stores what each needs.
 node $repo/mcp/setup/wizard.mjs; or exit 1
