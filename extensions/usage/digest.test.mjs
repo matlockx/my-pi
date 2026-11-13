@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { completedPeriods, digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, timeAbove } from "./digest.mjs";
+import { digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, reportPeriods, timeAbove } from "./digest.mjs";
 import { HOUR_MS } from "./parse.mjs";
 
 const TZ = "Europe/Berlin";
@@ -18,13 +18,22 @@ test("periods follow local midnight across a DST change and use ISO week keys", 
 	assert.deepEqual([month.key, iso(month.start), iso(month.end)], ["2026-04", "2026-03-31T22:00:00.000Z", "2026-04-30T22:00:00.000Z"], "local time decides the month");
 });
 
-test("completed periods run from the one holding the oldest data to the last that ended", () => {
-	const periods = completedPeriods(Date.parse("2026-10-30T12:00:00Z"), Date.parse("2026-11-13T12:00:00Z"), TZ);
-	const keys = (kind) => periods.filter((p) => p.kind === kind).map((p) => p.key);
-	const days = keys("daily");
-	assert.deepEqual([days.length, days[0], days.at(-1)], [14, "2026-10-30", "2026-11-12"], "today is still running");
-	assert.deepEqual(keys("weekly"), ["2026-W44", "2026-W45"], "W44 holds 30 October; W46 has not ended");
-	assert.deepEqual(keys("monthly"), ["2026-10"]);
+test("report periods run from the oldest data; the running week and month stop at their last ready day", () => {
+	const now = Date.parse("2026-11-13T12:00:00Z");
+	const plan = (ready) => reportPeriods(Date.parse("2026-10-30T12:00:00Z"), now, TZ, ready);
+	const keys = (periods, kind) => periods.filter((p) => p.kind === kind).map((p) => (p.cutoff ? `${p.key}<${iso(p.cutoff)}` : p.key));
+	const all = plan(() => true);
+	const days = keys(all, "daily");
+	assert.deepEqual([days.length, days[0], days.at(-1)], [14, "2026-10-30", "2026-11-12"], "today is not reported until it ends");
+	assert.deepEqual(keys(all, "weekly"), ["2026-W44", "2026-W45", "2026-W46<2026-11-12T23:00:00.000Z"], "W46 runs up to the end of 12 November");
+	assert.deepEqual(keys(all, "monthly"), ["2026-10", "2026-11<2026-11-12T23:00:00.000Z"]);
+
+	const thursdayPending = plan((p) => p.key !== "2026-11-12");
+	assert.deepEqual(keys(thursdayPending, "weekly").at(-1), "2026-W46<2026-11-11T23:00:00.000Z", "a day not ready yet holds the cutoff back");
+	const mondayPending = plan((p) => p.key !== "2026-11-09");
+	assert.deepEqual(keys(mondayPending, "weekly").at(-1), "2026-W45", "no ready day yet: no running report");
+	const weekPending = plan((p) => p.key !== "2026-W45");
+	assert.deepEqual(keys(weekPending, "weekly").slice(1, 2), ["2026-W45<2026-11-08T23:00:00.000Z"], "an ended week waiting for a device stays running");
 });
 
 test("the input hash ignores order and data outside the period and the one before", () => {
@@ -37,6 +46,7 @@ test("the input hash ignores order and data outside the period and the one befor
 	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2)], [{ ...snap, usedFraction: 0.3 }], { acc: "me" }, TZ), base);
 	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2)], [snap], { acc: "renamed" }, TZ), base);
 	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2), { ...row(2, 1), device: "b" }], [snap], { acc: "me" }, TZ), base, "a new device's rows");
+	assert.notEqual(inputHash({ ...period, cutoff: period.start + 3 * HOUR_MS }, [row(2, 1), row(-3, 2)], [snap], { acc: "me" }, TZ), base, "a running version differs from the final one");
 });
 
 test("a period is ready once every active device synced after its end, or after the maximum wait", () => {
@@ -108,4 +118,21 @@ test("digest sums the period, splits automation, drops idle limits and flags unl
 			["11", 1],
 		],
 	);
+});
+
+test("a running month covers the data up to its cutoff and compares with the same span of the month before", () => {
+	const month = periodOf("monthly", Date.parse("2026-11-13T12:00:00Z"), TZ);
+	const running = { ...month, cutoff: month.start + 3 * 24 * HOUR_MS };
+	const row = (start, days, cost, account = "acc") => ({ hour: start + days * 24 * HOUR_MS, sessionId: "s", project: "p", title: "t", agent: "main", feature: "user", provider: "anthropic", model: "m", account, device: "a", requests: 1, cost });
+	const october = periodOf("monthly", month.start - 1, TZ).start;
+	const rows = [row(month.start, 1, 4), row(month.start, 5, 50), row(october, 2, 6), row(october, 20, 90), row(month.start, 2, 1, "unpinned:anthropic")];
+	const d = digest({ period: running, rows, limits: [], labels: {}, tz: TZ, now: month.start + 4 * 24 * HOUR_MS, generator: "a" });
+	assert.equal(d.totals.cost, 5, "5 November is after the cutoff");
+	assert.equal(d.previousTotals.cost, 6, "only 1 to 3 October");
+	assert.equal(d.dataEnd, running.cutoff);
+	assert.deepEqual(
+		d.accounts.map((a) => a.label),
+		["account acc", "anthropic, login not recorded"],
+	);
+	assert.equal(d.firstSnapshot, Number.POSITIVE_INFINITY);
 });

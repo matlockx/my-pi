@@ -151,21 +151,29 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     `page.test.mjs`, `collect.test.mjs`; `report.mjs` exports `durationOf`, `limitDelta` and
     `untrackedRatio` for reuse.
   - Periods: local day, ISO week (Monday start) and month in `timezone` of the config (default
-    `Europe/Berlin`). Each run covers every completed period from the one holding the oldest row or
-    snapshot in the repository; idle periods in between get the empty-state page.
+    `Europe/Berlin`). Each run covers every period from the one holding the oldest row or snapshot in
+    the repository (`reportPeriods`); idle periods in between get the empty-state page.
   - Ready: once every device with rows in the period shows a row or snapshot after its end, or
-    24 hours after the end at the latest (an asleep device cannot block a report forever).
+    24 hours after the end at the latest (an asleep device cannot block a report forever). A day is
+    reported once ready. The current week and month, and an ended one not ready yet, get a running
+    report with `cutoff` = end of their last ready day: updated once a day, marked "running" on the
+    page and in the index, KPIs compared with the same span of the period before.
   - Rebuild: each page stores `inputHash` (digest.mjs) in `<meta name="usage-input">`: a sha256 of
-    the rows and snapshots of the period and the previous one, their accounts' labels, the time
-    zone and `REPORT_VERSION`. A report is written when its file is missing or the hash differs, so
-    a new device, a backfill, a renamed session or a new label rebuilds exactly the affected reports;
+    the rows and snapshots of the previous period and the period up to its cutoff, their accounts'
+    labels, the cutoff, the time zone and `REPORT_VERSION` (2 since running reports). A report is
+    written when its file is missing or the hash differs, so a new device, a backfill, a renamed
+    session or a new label rebuilds exactly the affected reports;
     bumping `REPORT_VERSION` rebuilds all after a page change. The untracked-use median reads windows
     closed by the period's end, so a rebuild shows the same flag; older data feeding that median is
     not hashed (accepted: a change there alone does not rebuild).
   - First device wins: reports are committed apart from device data and pushed; a rejected push
     drops the report commit (`reset --keep HEAD~1`) and the next run pulls the winner. Devices that
     pulled the same data compute the same hash, so the winner is not rewritten. Real data
-    (2026-05-25 to 2026-11-13): the first run writes 202 reports in 0.6 s, a run with no change 0.1 s.
+    (2026-05-25 to 2026-11-13): the first run writes 204 reports in 0.6 s, a run with no change 0.1 s.
+  - Limits card: accounts with snapshots get chips and a chart; the others share one line with their
+    cost, saying when the oldest snapshot is if the period has none. Rows without a credential pin
+    are labelled "<provider>, login not recorded"; an unnamed account gets both fixes (log in again
+    in omp, or a root `accounts.json` entry).
   - Page: one self-contained HTML file (inline CSS and SVG, no scripts, light and dark themes):
     KPIs against the previous period; per-account limit chart with peak, time at 90%+ or 100%, pace
     of 7-day-or-longer windows, and the untracked-use flag; cost over time by top project; projects
@@ -173,7 +181,7 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     calendar and ISO-week bars (monthly); top sessions; token kinds with estimated cost shares;
     models, agents and devices (single-value mixes collapse to one line); device sync state.
     `reports/index.html` lists every report.
-  - Verify: `node --test extensions/usage/` (36 pass); reports generated from a copy of the real
+  - Verify: `node --test extensions/usage/` (40 pass); reports generated from a copy of the real
     repository and their charts inspected as rendered SVG. Not run: a full page in a browser (the
     sandbox blocks Chrome), the hourly loop end to end.
 

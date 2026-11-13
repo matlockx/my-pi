@@ -20,7 +20,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { completedPeriods, digest, inputHash, isReady, KINDS, lastSeen, localParts } from "./digest.mjs";
+import { digest, inputHash, isReady, KINDS, lastSeen, localParts, reportPeriods } from "./digest.mjs";
 import { renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
 import { accountHash, scanSessions } from "./parse.mjs";
 import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
@@ -228,11 +228,12 @@ function readIfExists(file) {
 }
 
 /**
- * Writes the report of every ready period (`isReady`) from the oldest row or snapshot in the
- * repository to the last completed one, when its file is missing or was rendered from other data
- * (digest.mjs `inputHash`, stored in the page), then rewrites `reports/index.html`. A new device or
- * a backfill therefore rebuilds exactly the reports whose periods it added data to; when two
- * devices hold the same data they compute the same hash, so the first push wins and stays.
+ * Writes the report of every period digest.mjs `reportPeriods` names, from the oldest row or
+ * snapshot in the repository to the running week and month, when its file is missing or was
+ * rendered from other data (`inputHash`, stored in the page), then rewrites `reports/index.html`.
+ * A running week or month is rebuilt once a day, when its next day becomes ready; a new device or a
+ * backfill rebuilds exactly the reports whose periods it added data to. Devices holding the same
+ * data compute the same hash, so the first push wins and stays.
  *
  * @returns {string[]} Paths written, relative to the repository.
  */
@@ -243,9 +244,9 @@ export function writeReports({ repo, now, tz, device }) {
 	for (const s of limits) first = Math.min(first, s.recordedAt);
 	if (!Number.isFinite(first)) return [];
 	const seen = lastSeen(rows, limits);
+	const periods = reportPeriods(first, now, tz, (p) => isReady(p, rows, seen, now));
 	const written = [];
-	for (const period of completedPeriods(first, now, tz)) {
-		if (!isReady(period, rows, seen, now)) continue;
+	for (const period of periods) {
 		const path = join("reports", reportPath(period));
 		const hash = inputHash(period, rows, limits, labels, tz);
 		if (storedHash(readIfExists(join(repo, path))) === hash) continue;
@@ -253,7 +254,8 @@ export function writeReports({ repo, now, tz, device }) {
 		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device }), hash));
 		written.push(path);
 	}
-	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo)));
+	const running = new Set(periods.filter((p) => p.cutoff).map(reportPath));
+	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo), running));
 	return written;
 }
 

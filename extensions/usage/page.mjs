@@ -82,7 +82,8 @@ function delta(k, a, b) {
 }
 
 function kpis(d) {
-	const word = { daily: "the day before", weekly: "the week before", monthly: "the month before" }[d.period.kind];
+	const before = { daily: "the day before", weekly: "the week before", monthly: "the month before" }[d.period.kind];
+	const word = d.period.cutoff ? `by this point ${before}` : before;
 	return `<section class="kpis">${KPIS.map((k) => {
 		const a = k.get(d.totals);
 		const b = k.get(d.previousTotals);
@@ -267,20 +268,38 @@ function limitChips(l, tz) {
 	return out;
 }
 
+// Why an account has no name, and both ways to give it one.
+function labelHint(a) {
+	return `<p class="note"><b>${esc(a.label)} has no name.</b> No device is logged in to this account in omp any more, so the sync cannot name it. Log in to it again in omp on any Mac (the next sync names it and adds the limit history omp kept), or name it in <code>accounts.json</code> at the root of the usage repository: <code>{ "${esc(a.id)}": "anthropic: you@example.com" }</code>.</p>`;
+}
+
 function accountBlock(a, d) {
-	const hint = a.labelled
-		? ""
-		: `<p class="note">This account has no label. Add <code>"${esc(a.id)}": "&lt;name&gt;"</code> to <code>accounts.json</code> at the repository root.</p>`;
 	// A month of 5-hour windows is a wall of spikes; the monthly chart keeps the long windows, the chips keep the 5-hour figures.
 	const charted = d.period.kind === "monthly" ? a.limits.filter((l) => l.duration >= 24 * 3_600_000) : a.limits;
 	const chart = charted.length ? limitChart(charted, d) : "";
-	const body = a.limits.length ? `<div class="chips">${a.limits.flatMap((l) => limitChips(l, d.tz)).join("")}</div>${chart}` : `<p class="muted">No limit use recorded for this account in the period.</p>`;
-	return `<div class="account"><div class="account-head"><h3>${esc(a.label)}</h3><span>${money(a.cost)} · ${compact(a.requests)} requests</span></div>${hint}${body}</div>`;
+	return `<div class="account"><div class="account-head"><h3>${esc(a.label)}</h3><span>${money(a.cost)} · ${compact(a.requests)} requests</span></div>${a.labelled ? "" : labelHint(a)}<div class="chips">${a.limits.flatMap((l) => limitChips(l, d.tz)).join("")}</div>${chart}</div>`;
 }
 
 function limitsCard(d) {
-	if (!d.accounts.length) return "";
-	return card("Limits", "How full each subscription limit got. Pace projects the window's average rate so far to its reset.", d.accounts.map((a) => accountBlock(a, d)).join(""));
+	const charted = d.accounts.filter((a) => a.limits.length);
+	const others = d.accounts.filter((a) => !a.limits.length && a.cost > 0);
+	if (!charted.length && !others.length) return "";
+	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, day: "numeric", month: "short", year: "numeric" }).format(ms);
+	let missing = "";
+	if (others.length) {
+		let lead = "No limit snapshots for";
+		if (!charted.length && !(d.firstSnapshot < d.dataEnd))
+			lead = Number.isFinite(d.firstSnapshot)
+				? `No limit snapshots exist yet for this period: the oldest in the repository is from ${day(d.firstSnapshot)}. Cost per account`
+				: "No limit snapshots in the repository yet. Cost per account";
+		else if (!charted.length) lead = "No limit snapshots in this period for";
+		const names = others.map((a) => `<b>${esc(a.label)}</b> ${money(a.cost)}`).join(" · ");
+		const unpinned = others.some((a) => a.id.startsWith("unpinned:"))
+			? `<p class="muted small">“login not recorded”: requests from session logs written before omp recorded which login a session used.</p>`
+			: "";
+		missing = `<div class="account"><p class="muted">${lead}: ${names}</p>${unpinned}${others.filter((a) => !a.labelled).map(labelHint).join("")}</div>`;
+	}
+	return card("Limits", "How full each subscription limit got. Pace projects the window's average rate so far to its reset.", charted.map((a) => accountBlock(a, d)).join("") + missing);
 }
 
 // --- Sessions and efficiency
@@ -323,8 +342,8 @@ function mixCard(title, sub, items) {
 function devicesFooter(d) {
 	const chips = d.devices
 		.map((v) => {
-			const stale = v.lastSeen < d.period.end;
-			return `<div class="chip ${stale ? "warn" : ""}" title="${stale ? "Not synced since the period ended: its last hours may be missing." : "Synced after the period ended."}"><span>${esc(v.name)}</span><b>${money(v.cost)}</b><em>last sync ${clock(v.lastSeen, d.tz)}</em></div>`;
+			const stale = v.lastSeen < d.dataEnd;
+			return `<div class="chip ${stale ? "warn" : ""}" title="${stale ? "Not synced since the end of the report's data: its last hours may be missing." : "Synced after the end of the report's data."}"><span>${esc(v.name)}</span><b>${money(v.cost)}</b><em>last sync ${clock(v.lastSeen, d.tz)}</em></div>`;
 		})
 		.join("");
 	return `<footer><div class="chips">${chips}</div><p>Costs are API-equivalent (list prices of the logged tokens), not billed amounts. Limit figures come from the providers' usage endpoints; shares and pace are estimates. Generated ${clock(d.generatedAt, d.tz)} by ${esc(d.generator)}.</p></footer>`;
@@ -379,7 +398,9 @@ h3.minor{font-size:13px;color:var(--muted);font-weight:600;margin:18px 0 8px;tex
 .costcell{min-width:170px}.costcell b{font-variant-numeric:tabular-nums}.mini{height:6px;border-radius:3px;background:var(--cell);margin:6px 0 4px;overflow:hidden}.mini span{display:block;height:100%;background:linear-gradient(90deg,var(--c0),var(--c3))}
 .kv{display:grid;grid-template-columns:1fr auto 110px;gap:10px;font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--border)}.kv em{color:var(--muted);font-style:normal;text-align:right;font-size:12.5px}.kv b{font-variant-numeric:tabular-nums}.kv.total{border-bottom:0;padding-top:10px}
 .single{color:var(--muted);margin:0}.single b{color:var(--fg)}
-.empty{text-align:center;padding:40px 20px;color:var(--muted)}.empty b{display:block;font-size:20px;color:var(--fg);margin-bottom:4px}
+.empty{text-align:center;padding:40px 20px;color:var(--muted)}.empty b{display:block;font-size:20px;color:var(--fg);margin-bottom:4px}.small{font-size:12.5px;margin:6px 0 0}
+.hero nav .live{background:#22c55e33;border-color:#4ade8088}.live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;margin-right:7px;box-shadow:0 0 0 3px #4ade8040}
+.badge{font-size:11px;font-weight:650;color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);padding:1px 8px;border-radius:999px;margin-left:8px}
 footer{margin-top:8px;font-size:12.5px;color:var(--muted)}footer p{max-width:820px}
 .index{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}.index ul{list-style:none;margin:0;padding:0}.index li a{display:flex;justify-content:space-between;padding:9px 12px;border-radius:10px;text-decoration:none}
 .index li a:hover{background:var(--cell)}.index li a span{color:var(--muted);font-size:12.5px}
@@ -404,10 +425,12 @@ export const storedHash = (html) => /<meta name="usage-input" content="([0-9a-f]
 /** The report page of one period; hash is its input hash, stored in the page for storedHash. */
 export function renderReport(d, hash) {
 	const kind = KIND_NAMES[d.period.kind];
-	const hero = `<header class="hero"><div class="eyebrow">Agent usage · ${kind} report</div><h1>${esc(d.label)}</h1>
-<nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}<span>${esc(d.tz)}</span></nav></header>`;
+	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, weekday: "short", day: "numeric", month: "short" }).format(ms);
+	const live = d.period.cutoff ? `<span class="live"><i class="live-dot"></i>Running · data up to and including ${esc(day(d.period.cutoff - 1))} · updated daily</span>` : "";
+	const hero = `<header class="hero"><div class="eyebrow">Agent usage · ${kind} report${d.period.cutoff ? " · so far" : ""}</div><h1>${esc(d.label)}</h1>
+<nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}${live}<span>${esc(d.tz)}</span></nav></header>`;
 	if (!d.totals.requests && !d.accounts.some((a) => a.limits.length))
-		return shell(`${kind} usage · ${d.period.key}`, `${hero}${kpis(d)}${card("No tracked usage", "", `<div class="empty"><b>Nothing ran in this period.</b>No device recorded a request or a limit snapshot.</div>`)}${devicesFooter(d)}`, hash);
+		return shell(`${kind} usage · ${d.period.key}`, `${hero}${kpis(d)}${card("No tracked usage", "", `<div class="empty"><b>Nothing ran ${d.period.cutoff ? "so far" : "in this period"}.</b>No device recorded a request or a limit snapshot.</div>`)}${devicesFooter(d)}`, hash);
 	const body = [
 		hero,
 		kpis(d),
@@ -422,17 +445,21 @@ export function renderReport(d, hash) {
 	return shell(`${kind} usage · ${d.period.key}`, body.join("\n"), hash);
 }
 
-/** The index page; reports is { daily: [key…], weekly: […], monthly: […] }, newest first. */
-export function renderIndex(reports) {
+/**
+ * The index page; reports is { daily: [key…], weekly: […], monthly: […] }, newest first, and
+ * running holds the report paths (`reportPath`) of periods still running.
+ */
+export function renderIndex(reports, running = new Set()) {
 	const columns = Object.entries(KIND_NAMES)
 		.map(([kind, name]) => {
 			const keys = reports[kind] ?? [];
-			const items = keys.length ? keys.map((k) => `<li><a href="${kind}/${esc(k)}.html"><b>${esc(k)}</b><span>open →</span></a></li>`).join("") : `<li class="muted">None yet.</li>`;
+			const badge = (k) => (running.has(`${kind}/${k}.html`) ? `<em class="badge">running</em>` : "");
+			const items = keys.length ? keys.map((k) => `<li><a href="${kind}/${esc(k)}.html"><b>${esc(k)}${badge(k)}</b><span>open →</span></a></li>`).join("") : `<li class="muted">None yet.</li>`;
 			return card(name, `${keys.length} report${keys.length === 1 ? "" : "s"}`, `<ul>${items}</ul>`);
 		})
 		.join("");
 	return shell(
 		"Agent usage reports",
-		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly and monthly, written by the first device to sync after a period ends.</span></nav></header><div class="index">${columns}</div>`,
+		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly and monthly. The running week and month update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header><div class="index">${columns}</div>`,
 	);
 }

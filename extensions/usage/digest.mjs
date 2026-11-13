@@ -12,7 +12,7 @@ import { durationOf, limitDelta, UNTRACKED_FACTOR, untrackedRatio } from "./repo
 
 export const KINDS = ["daily", "weekly", "monthly"];
 /** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
-export const REPORT_VERSION = 1;
+export const REPORT_VERSION = 2;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -91,25 +91,40 @@ export function periodOf(kind, ms, tz) {
 
 export const previousPeriod = (period, tz) => periodOf(period.kind, period.start - 1, tz);
 
-/** Every period per kind from the one containing `from` to the last one that ended at or before now, oldest first. */
-export function completedPeriods(from, now, tz) {
+/**
+ * The periods to report, per kind from the one containing `from` to the one containing now, oldest
+ * first. A period that ended and is `ready` is final. A week or month that is still running, or
+ * ended but is not ready yet, gets `cutoff`: the end of its last ready day (days in order from its
+ * start); it is left out while no day of it is ready. Days are reported only when final.
+ */
+export function reportPeriods(from, now, tz, ready) {
 	const out = [];
 	for (const kind of KINDS) {
-		for (let p = periodOf(kind, from, tz); p.end <= now; p = periodOf(kind, p.end, tz)) out.push(p);
+		for (let p = periodOf(kind, from, tz); p.start < now; p = periodOf(kind, p.end, tz)) {
+			if (p.end <= now && ready(p)) out.push(p);
+			else if (kind !== "daily") {
+				let cutoff = p.start;
+				for (let d = periodOf("daily", p.start, tz); d.end <= Math.min(now, p.end) && ready(d); d = periodOf("daily", d.end, tz)) cutoff = d.end;
+				if (cutoff > p.start) out.push({ ...p, cutoff });
+			}
+		}
 	}
 	return out;
 }
 
+// End of the data a report covers: the cutoff of a running period, else its end.
+const dataEnd = (period) => period.cutoff ?? period.end;
+
 /**
- * Fingerprint of the data a period's report is built from: the rows and limit snapshots of the
- * period and the one before (the KPI comparison), their accounts' labels, the time zone and
- * REPORT_VERSION. Independent of the order of rows and snapshots, so every device that pulled the
- * same data computes the same value.
+ * Fingerprint of the data a period's report is built from: the rows and limit snapshots from the
+ * previous period's start to the period's data end (`cutoff` while running), their accounts'
+ * labels, the cutoff, the time zone and REPORT_VERSION. Independent of the order of rows and
+ * snapshots, so every device that pulled the same data computes the same value.
  */
 export function inputHash(period, rows, limits, labels, tz) {
 	// shortcut: the untracked-use median also reads up to 30 days of older data, not hashed here; a change there alone does not rebuild the report.
 	const from = previousPeriod(period, tz).start;
-	const inside = (t) => t >= from && t < period.end;
+	const inside = (t) => t >= from && t < dataEnd(period);
 	const accounts = new Set();
 	const lines = [];
 	for (const r of rows.filter((x) => inside(x.hour))) {
@@ -121,10 +136,8 @@ export function inputHash(period, rows, limits, labels, tz) {
 		lines.push(JSON.stringify([s.device, s.account, s.limitId, s.recordedAt, s.usedFraction ?? null, s.resetsAt ?? null, s.label ?? null, s.window ?? null, s.durationMs ?? null]));
 	}
 	const named = [...accounts].filter((a) => Object.hasOwn(labels, a)).sort().map((a) => [a, labels[a]]);
-	return createHash("sha256")
-		.update(JSON.stringify([REPORT_VERSION, tz, period.kind, period.key, named, hasPrevious(period, rows, limits, tz)]))
-		.update(lines.sort().join("\n"))
-		.digest("hex");
+	const head = [REPORT_VERSION, tz, period.kind, period.key, period.cutoff ?? null, named, hasPrevious(period, rows, limits, tz)];
+	return createHash("sha256").update(JSON.stringify(head)).update(lines.sort().join("\n")).digest("hex");
 }
 
 /** Whether any row or snapshot lies before the previous period's end, so the previous period has a report. */
@@ -343,10 +356,16 @@ function periodLabel(period, tz) {
  */
 export function digest({ period, rows, limits, labels, tz, now, generator }) {
 	const previous = previousPeriod(period, tz);
+	// A running period covers [start, cutoff); it is compared with the same length of the period before.
+	const window = { ...period, end: dataEnd(period) };
 	const within = (p) => (r) => r.hour >= p.start && r.hour < p.end;
-	const current = rows.filter(within(period));
-	const labelOf = (a) =>
-		Object.hasOwn(labels, a) ? labels[a] : a.startsWith("unpinned:") ? `${a.slice(9)} (no account)` : `account ${a.slice(0, 8)}`;
+	const current = rows.filter(within(window));
+	const labelOf = (a) => {
+		if (Object.hasOwn(labels, a)) return labels[a];
+		if (!a.startsWith("unpinned:")) return `account ${a.slice(0, 8)}`;
+		const provider = a.slice(9);
+		return provider === "unknown" ? "provider not recorded" : `${provider}, login not recorded`;
+	};
 	labelOf.known = (a) => Object.hasOwn(labels, a) || a.startsWith("unpinned:");
 	const projects = stacked(current, (r) => r.project || "(none)", (r) => labelOf(r.account));
 	const series = projects.slice(0, TOP_SERIES).map((p) => p.name);
@@ -354,14 +373,16 @@ export function digest({ period, rows, limits, labels, tz, now, generator }) {
 	const seen = lastSeen(rows, limits);
 	return {
 		period,
+		dataEnd: window.end,
 		previous: hasPrevious(period, rows, limits, tz) ? previous : undefined,
 		label: periodLabel(period, tz),
 		tz,
 		generatedAt: now,
 		generator,
 		totals: totals(current),
-		previousTotals: totals(rows.filter(within(previous))),
-		accounts: accountViews(rows, limits, period, now, labelOf),
+		previousTotals: totals(rows.filter(within({ start: previous.start, end: Math.min(previous.end, previous.start + window.end - window.start) }))),
+		accounts: accountViews(rows, limits, window, now, labelOf),
+		firstSnapshot: limits.reduce((m, s) => Math.min(m, s.recordedAt), Number.POSITIVE_INFINITY),
 		projects,
 		accountNames: [...new Set(projects.flatMap((p) => [...p.parts.keys()]))],
 		series,

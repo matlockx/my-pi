@@ -49,6 +49,25 @@ test("the index links every report kind and says when one has none yet", () => {
 	assert.match(html, /None yet\./);
 });
 
+test("a running report says how far its data goes, compares by the same point, and the index marks it", () => {
+	const html = renderReport(digest({ period: { ...period, cutoff: period.start + 2 * 24 * HOUR_MS }, rows: [row("t", "p")], limits: [], labels: {}, tz: TZ, now: period.end, generator: "mac" }));
+	assert.match(html, /Running · data up to and including Tue 3 Nov · updated daily/);
+	assert.match(html, /by this point the week before/);
+	const index = renderIndex({ weekly: ["2026-W45", "2026-W44"] }, new Set(["weekly/2026-W45.html"]));
+	assert.match(index, /2026-W45<em class="badge">running<\/em>/);
+	assert.doesNotMatch(index, /2026-W44<em/);
+});
+
+test("accounts without limit snapshots share one line that says why, and an unnamed one says how to name it", () => {
+	const hash = "4ba3e6bc9315b1b2b3ea166a5b43e172864b00c2e6befe6e27046b64082b4085";
+	const later = { device: "mac", account: "x", limitId: "5h", recordedAt: period.end + 9 * 24 * HOUR_MS, usedFraction: 0.1 };
+	const html = renderReport(digest({ period, rows: [{ ...row("t", "p"), account: hash }, { ...row("t", "p"), account: "unpinned:anthropic" }], limits: [later], labels: {}, tz: TZ, now: period.end, generator: "mac" }));
+	assert.match(html, /No limit snapshots exist yet for this period: the oldest in the repository is from 18 Nov 2026/);
+	assert.match(html, /anthropic, login not recorded/);
+	assert.match(html, new RegExp(`account 4ba3e6bc has no name\\.</b> No device is logged in to this account in omp any more.*${hash}`));
+	assert.doesNotMatch(html, /No limit use recorded/);
+});
+
 test("the previous-period link appears only when older data gives that period a report", () => {
 	assert.doesNotMatch(render([row("t", "p")]), /← 2026-W44/, "oldest report");
 	assert.match(render([row("t", "p"), { ...row("t", "p"), hour: period.start - 30 * 24 * HOUR_MS }]), /href="\.\.\/weekly\/2026-W44\.html">← 2026-W44/);
