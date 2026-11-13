@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
-import { accountOf, groupByTier, guessTier, parseTierAnswer, readJson, withDisabled, writeJson } from "./wizard.mjs";
+import { accountOf, groupByTier, guessTier, isExecutable, parseTierAnswer, readJson, withDisabled, writeJson } from "./wizard.mjs";
 
 test("guessTier: prod markers win, preprod is ppd, unknown names fail closed to prd", () => {
 	assert.equal(guessTier("arn:aws:eks:eu-central-1:430896782353:cluster/intl-dev-stardust-cluster"), "dev");
@@ -60,4 +60,15 @@ test("parseTierAnswer: tiers, skip words, default on Enter, undefined for anythi
 	assert.equal(parseTierAnswer("", "ppd"), "ppd");
 	assert.equal(parseTierAnswer("test", "ppd"), undefined, "a profile name is no tier");
 	assert.equal(parseTierAnswer("n", "ppd"), undefined, "n is not taken as skip");
+});
+
+test("isExecutable matches test -x: missing and non-executable files are false", (t) => {
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "wizard-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const file = join(dir, "prod-sql.sh");
+	assert.equal(isExecutable(file), false, "missing");
+	fs.writeFileSync(file, "#!/bin/sh\n", { mode: 0o644 });
+	assert.equal(isExecutable(file), false, "not executable");
+	fs.chmodSync(file, 0o755);
+	assert.equal(isExecutable(file), true);
 });

@@ -216,11 +216,22 @@ async function vclusterStep(rl, enabled) {
 	return true;
 }
 
+/** Reports whether file exists and the current user may execute it (test -x in fish). */
+export function isExecutable(file) {
+	try {
+		fs.accessSync(file, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function lifepaceStep(rl, enabled) {
 	if (!(await confirm(rl, "Use the lifepace production MCP (lifepace, 127.0.0.1:8088)?", enabled))) return false;
-	// Same default and check as my-pi-start and mcp/lifepace/server.mjs.
+	// DEV-NOTE: same default as mcp/lifepace/server.mjs and the same test -x check as my-pi-start, which skips the server otherwise.
 	const repo = process.env.LIFEPACE_REPO || join(HOME, "projects/lifepace");
-	if (!fs.existsSync(join(repo, "deploy/prod-sql.sh"))) console.log(`  todo: no ${repo}/deploy/prod-sql.sh; clone lifepace there or set LIFEPACE_REPO`);
+	const script = join(repo, "deploy/prod-sql.sh");
+	if (!isExecutable(script)) console.log(`  todo: no executable ${script}; clone lifepace to ${repo} or set LIFEPACE_REPO`);
 	return true;
 }
 

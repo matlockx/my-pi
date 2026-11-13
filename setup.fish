@@ -15,17 +15,21 @@
 # (extensions/usage), and copies the proxy starter to ~/bin/my-pi-start.
 # The proxies are not started; run my-pi-start after each login.
 #
-# A finished run stores a hash of this script, the wizard and my-pi-start; when
-# none changed since, the script asks before running again.
+# A run that finished without a failed or warned step stores a hash of this
+# script, the wizard, my-pi-start and the fish functions; when none changed
+# since, the script asks before running again (Enter runs it, n skips it).
 
 set -l repo (path dirname (path resolve (status filename)))
 
 set -l stamp ~/.local/state/my-pi/setup.sha256
-set -l digest (cat $repo/setup.fish $repo/mcp/setup/wizard.mjs $repo/bin/my-pi-start | shasum -a 256 | string split -f1 ' ')
+set -l digest (cat $repo/setup.fish $repo/mcp/setup/wizard.mjs $repo/bin/my-pi-start $repo/fish/functions/*.fish | shasum -a 256 | string split -f1 ' ')
 if string match -q -- $digest (cat $stamp 2>/dev/null)
-    read -l -P "setup.fish, the MCP wizard and my-pi-start are unchanged since the last finished run. Run again anyway? [y/N] " answer
-    string match -qir '^y(es)?$' -- $answer; or exit 0
+    # DEV-NOTE: defaults to yes: the omp setup check sends here for host state (links, tools) the hash cannot see.
+    read -l -P "setup.fish, the MCP wizard, my-pi-start and the fish functions are unchanged since the last finished run. Run again? [Y/n] " answer
+    string match -qir '^n(o)?$' -- $answer; and exit 0
 end
+# Set by a step that only warns; such a run stores no hash, so the next run does not offer to skip.
+set -l incomplete
 
 # Points link at source. A regular file in the way is kept as a timestamped
 # .bak; a link pointing elsewhere is replaced.
@@ -84,6 +88,7 @@ end
 if not __my_pi_node_ok
     # DEV-NOTE: an nvm/asdf node earlier on PATH shadows the Homebrew node just installed.
     echo "warning: "(command -v node)" is "(node --version 2>/dev/null)", older than 24.2; put /opt/homebrew/bin first on PATH or install node 24.2+ with your version manager" >&2
+    set incomplete 1
 end
 
 if not gh auth status >/dev/null 2>&1
@@ -115,7 +120,10 @@ set -q MY_PI_USAGE_REPO; and set usage_repo $MY_PI_USAGE_REPO
 set -l usage_dir ~/github/(path basename $usage_repo)
 if not test -d $usage_dir
     git clone git@github.com:$usage_repo.git $usage_dir
-    or echo "note: clone of $usage_repo failed; usage tracking stays on this Mac only until it is cloned to $usage_dir"
+    or begin
+        echo "note: clone of $usage_repo failed; usage tracking stays on this Mac only until it is cloned to $usage_dir"
+        set incomplete 1
+    end
 end
 if test -d $usage_dir; and not test -f ~/.pi/usage/config.json
     mkdir -p ~/.pi/usage
@@ -133,7 +141,11 @@ chmod 755 ~/bin/my-pi-start
 fish_add_path ~/bin
 echo "installed ~/bin/my-pi-start"
 
-mkdir -p (path dirname $stamp)
-and echo $digest >$stamp
+if not set -q incomplete[1]
+    mkdir -p (path dirname $stamp)
+    and echo $digest >$stamp
+else
+    rm -f $stamp
+end
 
 echo "done. Start the proxies now and after each login with my-pi-start (my-pi-start restart restarts them all), then run /mcp reconnect github and /mcp reconnect jira in omp."
