@@ -3,7 +3,8 @@
  * footer stats line. Replaces the uniformly-dim line via ctx.ui.setFooter().
  * Under omp, renders the token/cache/cost segments as a below-editor widget,
  * led by the route of the next request: provider/model and the OAuth account
- * (e-mail) or `api key`. The route shows even with the colors toggled off.
+ * (e-mail) or `api key`; before omp binds an account to the session, the
+ * `auth.accountPolicies` default instead. The route shows even with the colors toggled off.
  *
  * Color families (truecolor ANSI, tuned for dark terminals):
  *   IN side  (blue/cyan family) — tokens that feed the model:
@@ -136,16 +137,27 @@ function usageParts(ctx: Ctx): Array<[string, string]> {
 }
 
 type Identity = Parameters<typeof routeLabel>[1];
-type OAuthAuthStorage = { oauth?: { identity?: (provider: string, sessionId: string) => Identity } };
+type Account = NonNullable<Parameters<typeof routeLabel>[2]>[number];
+type OAuthAuthStorage = {
+	oauth?: {
+		identity?: (provider: string, sessionId: string) => Identity;
+		accounts?: (provider: string, sessionId: string) => Account[];
+		policy?: (provider: string, account: Account) => { priority?: number } | undefined;
+	};
+};
 
 /** Route segment as a [plain, colored] pair; see routeLabel. */
 function routePart(ctx: Ctx): [string, string] {
 	const model = ctx.model;
-	// DEV-NOTE: omp's AuthStorage (not pi's) resolves the session's OAuth account; omp calls the same
-	// method to write its credential_pin entries, so the label matches the account that is billed.
-	const storage = (ctx.modelRegistry as { authStorage?: OAuthAuthStorage } | undefined)?.authStorage;
-	const identity = model ? storage?.oauth?.identity?.(model.provider, ctx.sessionManager.getSessionId()) : undefined;
-	const s = routeLabel(model, identity);
+	// DEV-NOTE: omp's AuthStorage (not pi's) resolves the session's OAuth account. oauth.identity falls
+	// back to the first stored account until the first request binds one (accounts()[].active), so the
+	// account is named only once bound; until then the label names the auth.accountPolicies default.
+	const oauth = (ctx.modelRegistry as { authStorage?: OAuthAuthStorage } | undefined)?.authStorage?.oauth;
+	const sessionId = ctx.sessionManager.getSessionId();
+	const identity = model ? oauth?.identity?.(model.provider, sessionId) : undefined;
+	const accounts = model ? (oauth?.accounts?.(model.provider, sessionId) ?? []) : [];
+	const priorityOf = (account: Account) => (model ? oauth?.policy?.(model.provider, account)?.priority : undefined);
+	const s = routeLabel(model, identity, accounts, priorityOf);
 	return [s, c(COL.route, s, true)];
 }
 
