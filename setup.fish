@@ -11,7 +11,8 @@
 # repo's fish functions, installs missing Homebrew tools, logs gh in, drops a
 # user-level "github" MCP entry that outranks my-pi/mcp.json, runs the MCP setup
 # wizard (mcp/setup/wizard.mjs: which MCP servers to use, what each needs, the
-# Kubernetes/AWS tier map), and copies the proxy starter to ~/bin/my-pi-start.
+# Kubernetes/AWS tier map), clones the usage repository and writes its config
+# (extensions/usage), and copies the proxy starter to ~/bin/my-pi-start.
 # The proxies are not started; run my-pi-start after each login.
 
 set -l repo (path dirname (path resolve (status filename)))
@@ -97,9 +98,19 @@ else
     end
 end
 
-if not test -f ~/.pi/usage/config.json
-    echo "note: usage tracking is off. To turn it on, create a private repo (e.g. agent-usage), clone it to"
-    echo "      ~/github/agent-usage and write {\"repo\": \"~/github/agent-usage\"} to ~/.pi/usage/config.json"
+# Usage tracking (my-pi/extensions/usage): clones the private usage repository and writes its
+# config on the first run. MY_PI_USAGE_REPO overrides the repository (owner/name).
+set -l usage_repo matlockx/agent-usage
+set -q MY_PI_USAGE_REPO; and set usage_repo $MY_PI_USAGE_REPO
+set -l usage_dir ~/github/(path basename $usage_repo)
+if not test -d $usage_dir
+    git clone git@github.com:$usage_repo.git $usage_dir
+    or echo "note: clone of $usage_repo failed; usage tracking stays on this Mac only until it is cloned to $usage_dir"
+end
+if test -d $usage_dir; and not test -f ~/.pi/usage/config.json
+    mkdir -p ~/.pi/usage
+    printf '{"repo": "%s"}\n' (string replace -r "^$HOME" '~' $usage_dir) >~/.pi/usage/config.json
+    echo "wrote ~/.pi/usage/config.json (repo $usage_dir)"
 end
 
 # Asks per MCP server (GitHub, Jira, jflow) and for the Kubernetes/AWS tiers; installs or
