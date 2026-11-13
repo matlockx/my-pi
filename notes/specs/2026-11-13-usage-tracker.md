@@ -112,12 +112,14 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     `fish/functions/usagesync.fish`, `bin/my-pi-start`, `setup.fish`
   - Change: `collect.mjs` reads `~/.pi/usage/config.json`, parses every log on the first run and logs
     modified in the last 2 days afterwards, labels accounts and stores snapshots from `omp usage --json`
-    and `omp usage --history --json --days 30|3` (history joined to accounts by provider, accountId,
-    e-mail), gives unpinned rows the provider's account when the device has exactly one, writes the
-    device directory, then commits, `git pull --rebase`, pushes (`-u` on the first push). A failed
-    rebase is aborted and reported, never forced. `--loop` repeats hourly; `usagesync
-    start|stop|status|now|log` runs it in the background with a pid file; `my-pi-start` starts and
-    restarts it; `setup.fish` prints the setup hint when the config is missing.
+    and `omp usage --history --json --days 3650|3` (all history on the first run; joined to accounts
+    by provider, accountId, e-mail), gives unpinned rows the provider's account when the device has
+    exactly one, writes the device directory, then commits, `git pull --rebase`, pushes (`-u` on the
+    first push). A failed rebase is aborted and reported, never forced. `--loop` repeats hourly;
+    `--backfill` (`usagesync backfill`) repeats the first-run scan on demand, for a device whose
+    first run kept only 30 days of history or whose collector was off for more than two days;
+    `usagesync start|stop|status|now|backfill|log` runs it in the background with a pid file;
+    `my-pi-start` starts and restarts it; `setup.fish` prints the setup hint when the config is missing.
   - Verify: `node --test extensions/usage/collect.test.mjs` (3 pass: two clones of a bare remote push
     in turn, the re-run changes no file). Dry run on real data: 426 rows, 611 snapshots, both accounts
     labelled. Not run here: the host loop and a push to the real repository (needs the repo and config).
@@ -149,13 +151,21 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     `page.test.mjs`, `collect.test.mjs`; `report.mjs` exports `durationOf`, `limitDelta` and
     `untrackedRatio` for reuse.
   - Periods: local day, ISO week (Monday start) and month in `timezone` of the config (default
-    `Europe/Berlin`). Each run checks the last 7 days, 4 weeks and 2 months for a missing file.
+    `Europe/Berlin`). Each run covers every completed period from the one holding the oldest row or
+    snapshot in the repository; idle periods in between get the empty-state page.
   - Ready: once every device with rows in the period shows a row or snapshot after its end, or
     24 hours after the end at the latest (an asleep device cannot block a report forever).
-  - First device wins: reports are written only when `reports/<kind>/<key>.html` is missing in the
-    checkout just pulled; they are committed apart from device data and pushed; a rejected push drops
-    the report commit (`reset --keep HEAD~1`) and the next run pulls the winner. A report is never
-    rewritten, so late rows of a device that synced after the 24-hour limit stay out of it.
+  - Rebuild: each page stores `inputHash` (digest.mjs) in `<meta name="usage-input">`: a sha256 of
+    the rows and snapshots of the period and the previous one, their accounts' labels, the time
+    zone and `REPORT_VERSION`. A report is written when its file is missing or the hash differs, so
+    a new device, a backfill, a renamed session or a new label rebuilds exactly the affected reports;
+    bumping `REPORT_VERSION` rebuilds all after a page change. The untracked-use median reads windows
+    closed by the period's end, so a rebuild shows the same flag; older data feeding that median is
+    not hashed (accepted: a change there alone does not rebuild).
+  - First device wins: reports are committed apart from device data and pushed; a rejected push
+    drops the report commit (`reset --keep HEAD~1`) and the next run pulls the winner. Devices that
+    pulled the same data compute the same hash, so the winner is not rewritten. Real data
+    (2026-05-25 to 2026-11-13): the first run writes 202 reports in 0.6 s, a run with no change 0.1 s.
   - Page: one self-contained HTML file (inline CSS and SVG, no scripts, light and dark themes):
     KPIs against the previous period; per-account limit chart with peak, time at 90%+ or 100%, pace
     of 7-day-or-longer windows, and the untracked-use flag; cost over time by top project; projects
@@ -163,7 +173,7 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     calendar and ISO-week bars (monthly); top sessions; token kinds with estimated cost shares;
     models, agents and devices (single-value mixes collapse to one line); device sync state.
     `reports/index.html` lists every report.
-  - Verify: `node --test extensions/usage/` (33 pass); reports generated from a copy of the real
+  - Verify: `node --test extensions/usage/` (36 pass); reports generated from a copy of the real
     repository and their charts inspected as rendered SVG. Not run: a full page in a browser (the
     sandbox blocks Chrome), the hourly loop end to end.
 

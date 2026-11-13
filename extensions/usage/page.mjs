@@ -387,9 +387,9 @@ footer{margin-top:8px;font-size:12.5px;color:var(--muted)}footer p{max-width:820
 @media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.hero h1{font-size:26px}.bar-row{grid-template-columns:110px 1fr 64px}}
 `;
 
-function shell(title, body) {
+function shell(title, body, hash) {
 	return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<html lang="en"><head><meta charset="utf-8">${hash ? `<meta name="usage-input" content="${esc(hash)}">` : ""}<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${esc(title)}</title><style>${CSS}</style></head>
 <body><main class="wrap">${body}</main></body></html>
 `;
@@ -398,13 +398,16 @@ function shell(title, body) {
 /** File path of a report relative to the reports directory. */
 export const reportPath = (period) => `${period.kind}/${period.key}.html`;
 
-/** The report page of one period. */
-export function renderReport(d) {
+/** Input hash a report page was rendered with (digest.mjs `inputHash`), or undefined. */
+export const storedHash = (html) => /<meta name="usage-input" content="([0-9a-f]+)">/.exec(html)?.[1];
+
+/** The report page of one period; hash is its input hash, stored in the page for storedHash. */
+export function renderReport(d, hash) {
 	const kind = KIND_NAMES[d.period.kind];
 	const hero = `<header class="hero"><div class="eyebrow">Agent usage · ${kind} report</div><h1>${esc(d.label)}</h1>
-<nav><a href="../index.html">All reports</a><a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a><span>${esc(d.tz)}</span></nav></header>`;
+<nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}<span>${esc(d.tz)}</span></nav></header>`;
 	if (!d.totals.requests && !d.accounts.some((a) => a.limits.length))
-		return shell(`${kind} usage · ${d.period.key}`, `${hero}${kpis(d)}${card("No tracked usage", "", `<div class="empty"><b>Nothing ran in this period.</b>No device recorded a request or a limit snapshot.</div>`)}${devicesFooter(d)}`);
+		return shell(`${kind} usage · ${d.period.key}`, `${hero}${kpis(d)}${card("No tracked usage", "", `<div class="empty"><b>Nothing ran in this period.</b>No device recorded a request or a limit snapshot.</div>`)}${devicesFooter(d)}`, hash);
 	const body = [
 		hero,
 		kpis(d),
@@ -416,7 +419,7 @@ export function renderReport(d) {
 		`<div class="grid3 row">${tokenCard(d)}${mixCard("Models", "Cost per model.", d.models)}${d.period.kind === "weekly" ? mixCard("Devices", "Cost per device.", d.devices.map((v) => ({ name: v.name, value: v.cost })).filter((v) => v.value > 0)) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
 		devicesFooter(d),
 	];
-	return shell(`${kind} usage · ${d.period.key}`, body.join("\n"));
+	return shell(`${kind} usage · ${d.period.key}`, body.join("\n"), hash);
 }
 
 /** The index page; reports is { daily: [key…], weekly: […], monthly: […] }, newest first. */

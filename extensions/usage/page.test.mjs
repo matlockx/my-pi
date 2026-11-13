@@ -49,6 +49,11 @@ test("the index links every report kind and says when one has none yet", () => {
 	assert.match(html, /None yet\./);
 });
 
+test("the previous-period link appears only when older data gives that period a report", () => {
+	assert.doesNotMatch(render([row("t", "p")]), /← 2026-W44/, "oldest report");
+	assert.match(render([row("t", "p"), { ...row("t", "p"), hour: period.start - 30 * 24 * HOUR_MS }]), /href="\.\.\/weekly\/2026-W44\.html">← 2026-W44/);
+});
+
 test("plain drops icon glyphs, niceMax rounds axis tops up", () => {
 	assert.equal(plain("\u{F099D} SCOPE: review"), "SCOPE: review", "supplementary private-use plane");
 	assert.equal(plain("\uE75C JIRA: find"), "JIRA: find");

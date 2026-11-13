@@ -53,12 +53,22 @@ function usagesync --description 'Hourly omp usage collection and git sync to th
             end
             echo "usagesync: running (pid $pid)"
             tail -n 1 $logfile
-        case now
-            node --no-warnings $collector
+        case now backfill
+            # DEV-NOTE: a second collector in the same checkout races the loop's git commands (index.lock).
+            if test -n "$pid"
+                echo "usagesync: the hourly loop is running (pid $pid); run: usagesync stop; usagesync $argv[1]; usagesync start" >&2
+                return 1
+            end
+            # backfill: all session logs and limit history this device still has; merges, so safe to repeat.
+            if test "$argv[1]" = backfill
+                node --no-warnings $collector --backfill
+            else
+                node --no-warnings $collector
+            end
         case log
             tail -f $logfile
         case '*'
-            echo "usage: usagesync [start|stop|status|now|log]" >&2
+            echo "usage: usagesync [start|stop|status|now|backfill|log]" >&2
             return 2
     end
 end

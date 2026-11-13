@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -108,6 +108,25 @@ test("two devices push to one remote in turn without conflicts, and a re-run wri
 	);
 });
 
+test("a later run skips logs untouched for two days; backfill reads them and all history again", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-backfill-"));
+	const days = [];
+	const usage = (d) => (days.push(d), { reports, history });
+	await collect({ repo, device: "mac", sessionsDir: sessions(0), now: NOW, usage });
+	const old = sessions(2);
+	const stale = new Date(NOW - 5 * 24 * 3_600_000);
+	utimesSync(join(old, "-shop", "2026-11-13T11-00-00-000Z_01a1a136-b5fd-77f9-8e1d-040fb9157988.jsonl"), stale, stale);
+
+	assert.equal((await collect({ repo, device: "mac", sessionsDir: old, now: NOW, usage })).rows, 0);
+	assert.equal((await collect({ repo, device: "mac", sessionsDir: old, now: NOW, usage, backfill: true })).rows, 1);
+	assert.deepEqual(days, [3650, 3, 3650], "first run and backfill ask omp for all history");
+	assert.deepEqual(
+		readRepo(repo).rows.map((r) => r.cost),
+		[2],
+		"the backfilled row replaces the stored one by key",
+	);
+});
+
 test("the first device to push a period's report wins, and the loser drops its copy without a conflict", async () => {
 	const root = mkdtempSync(join(tmpdir(), "usage-reports-"));
 	const remote = join(root, "remote.git");
@@ -146,4 +165,26 @@ test("a day stays unreported while an active device has not synced after it, at 
 	const day = join("reports", "daily", "2026-11-13.html");
 	assert.equal(writeReports({ repo, now: Date.parse("2026-11-14T02:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day), false);
 	assert.ok(writeReports({ repo, now: Date.parse("2026-11-14T23:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day));
+});
+
+test("reports reach back to the oldest data, and a new device rebuilds only the periods it adds data to", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-history-"));
+	git(repo, "init", "--quiet");
+	const usage = () => ({ reports: [], history: [] });
+	const tz = "Europe/Berlin";
+	const later = Date.parse("2026-12-20T12:00:00.000Z");
+	const report = (kind, key) => join("reports", kind, `${key}.html`);
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+
+	const first = writeReports({ repo, now: later, tz, device: "mac-a" });
+	assert.equal(first[0], report("daily", "2026-11-13"), "nothing before the oldest row");
+	for (const p of [report("daily", "2026-11-20"), report("weekly", "2026-W46"), report("monthly", "2026-11")]) assert.ok(first.includes(p), p);
+	assert.deepEqual(writeReports({ repo, now: later, tz, device: "mac-a" }), [], "unchanged data rewrites nothing");
+
+	await collect({ repo, device: "mac-b", sessionsDir: sessions(2), now: NOW, usage });
+	const rebuilt = writeReports({ repo, now: later, tz, device: "mac-a" });
+	for (const p of [report("daily", "2026-11-13"), report("daily", "2026-11-14"), report("weekly", "2026-W46"), report("monthly", "2026-11")])
+		assert.ok(rebuilt.includes(p), `${p}: its period or the one it compares with gained rows`);
+	assert.equal(rebuilt.includes(report("daily", "2026-11-20")), false);
+	assert.match(readFileSync(join(repo, report("daily", "2026-11-13")), "utf8"), /\$3\.00/, "both devices' cost");
 });

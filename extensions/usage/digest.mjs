@@ -5,12 +5,14 @@
  * Costs are API-equivalent (`usage.cost.total` of the session logs), not billed amounts.
  */
 
-import { COUNTERS, HOUR_MS } from "./parse.mjs";
+import { createHash } from "node:crypto";
+
+import { COUNTERS, HOUR_MS, rowKey } from "./parse.mjs";
 import { durationOf, limitDelta, UNTRACKED_FACTOR, untrackedRatio } from "./report.mjs";
 
 export const KINDS = ["daily", "weekly", "monthly"];
-/** Completed periods per kind checked for a missing report on each run, newest first. */
-export const BACKFILL = { daily: 7, weekly: 4, monthly: 2 };
+/** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
+export const REPORT_VERSION = 1;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -89,14 +91,46 @@ export function periodOf(kind, ms, tz) {
 
 export const previousPeriod = (period, tz) => periodOf(period.kind, period.start - 1, tz);
 
-/** Completed periods: per kind the last BACKFILL[kind] before the one containing now. */
-export function completedPeriods(now, tz) {
+/** Every period per kind from the one containing `from` to the last one that ended at or before now, oldest first. */
+export function completedPeriods(from, now, tz) {
 	const out = [];
 	for (const kind of KINDS) {
-		let p = periodOf(kind, now, tz);
-		for (let i = 0; i < BACKFILL[kind]; i++) out.push((p = previousPeriod(p, tz)));
+		for (let p = periodOf(kind, from, tz); p.end <= now; p = periodOf(kind, p.end, tz)) out.push(p);
 	}
 	return out;
+}
+
+/**
+ * Fingerprint of the data a period's report is built from: the rows and limit snapshots of the
+ * period and the one before (the KPI comparison), their accounts' labels, the time zone and
+ * REPORT_VERSION. Independent of the order of rows and snapshots, so every device that pulled the
+ * same data computes the same value.
+ */
+export function inputHash(period, rows, limits, labels, tz) {
+	// shortcut: the untracked-use median also reads up to 30 days of older data, not hashed here; a change there alone does not rebuild the report.
+	const from = previousPeriod(period, tz).start;
+	const inside = (t) => t >= from && t < period.end;
+	const accounts = new Set();
+	const lines = [];
+	for (const r of rows.filter((x) => inside(x.hour))) {
+		accounts.add(r.account);
+		lines.push(JSON.stringify([r.device, rowKey(r), r.project, r.title, ...COUNTERS.map((c) => r[c] ?? 0)]));
+	}
+	for (const s of limits.filter((x) => inside(x.recordedAt))) {
+		accounts.add(s.account);
+		lines.push(JSON.stringify([s.device, s.account, s.limitId, s.recordedAt, s.usedFraction ?? null, s.resetsAt ?? null, s.label ?? null, s.window ?? null, s.durationMs ?? null]));
+	}
+	const named = [...accounts].filter((a) => Object.hasOwn(labels, a)).sort().map((a) => [a, labels[a]]);
+	return createHash("sha256")
+		.update(JSON.stringify([REPORT_VERSION, tz, period.kind, period.key, named, hasPrevious(period, rows, limits, tz)]))
+		.update(lines.sort().join("\n"))
+		.digest("hex");
+}
+
+/** Whether any row or snapshot lies before the previous period's end, so the previous period has a report. */
+export function hasPrevious(period, rows, limits, tz) {
+	const end = previousPeriod(period, tz).end;
+	return rows.some((r) => r.hour < end) || limits.some((s) => s.recordedAt < end);
 }
 
 /** Latest time each device shows in the data: its newest snapshot or the start of its newest row's hour. */
@@ -254,7 +288,8 @@ function limitView(points, accountRows, period, now) {
 	const latest = inside.at(-1);
 	const duration = durationOf(latest);
 	const increase = limitDelta(points, period.start, period.end);
-	const ratio = untrackedRatio(points, accountRows, increase, period.start, period.end, now);
+	// Typical ratio from windows closed by the period's end, so a report rebuilt later shows the same flag.
+	const ratio = untrackedRatio(points, accountRows, increase, period.start, period.end, Math.min(now, period.end));
 	return {
 		id: latest.limitId,
 		label: latest.label ?? latest.limitId,
@@ -319,7 +354,7 @@ export function digest({ period, rows, limits, labels, tz, now, generator }) {
 	const seen = lastSeen(rows, limits);
 	return {
 		period,
-		previous,
+		previous: hasPrevious(period, rows, limits, tz) ? previous : undefined,
 		label: periodLabel(period, tz),
 		tz,
 		generatedAt: now,

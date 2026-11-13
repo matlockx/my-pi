@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { completedPeriods, digest, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, timeAbove } from "./digest.mjs";
+import { completedPeriods, digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, timeAbove } from "./digest.mjs";
 import { HOUR_MS } from "./parse.mjs";
 
 const TZ = "Europe/Berlin";
@@ -18,10 +18,25 @@ test("periods follow local midnight across a DST change and use ISO week keys", 
 	assert.deepEqual([month.key, iso(month.start), iso(month.end)], ["2026-04", "2026-03-31T22:00:00.000Z", "2026-04-30T22:00:00.000Z"], "local time decides the month");
 });
 
-test("completed periods exclude the current one and go back the backfill count", () => {
-	const keys = completedPeriods(Date.parse("2026-11-13T12:00:00Z"), TZ).map((p) => p.key);
-	assert.deepEqual(keys.slice(0, 2), ["2026-11-12", "2026-11-11"]);
-	assert.deepEqual(keys.slice(7), ["2026-W45", "2026-W44", "2026-W43", "2026-W42", "2026-10", "2026-09"]);
+test("completed periods run from the one holding the oldest data to the last that ended", () => {
+	const periods = completedPeriods(Date.parse("2026-10-30T12:00:00Z"), Date.parse("2026-11-13T12:00:00Z"), TZ);
+	const keys = (kind) => periods.filter((p) => p.kind === kind).map((p) => p.key);
+	const days = keys("daily");
+	assert.deepEqual([days.length, days[0], days.at(-1)], [14, "2026-10-30", "2026-11-12"], "today is still running");
+	assert.deepEqual(keys("weekly"), ["2026-W44", "2026-W45"], "W44 holds 30 October; W46 has not ended");
+	assert.deepEqual(keys("monthly"), ["2026-10"]);
+});
+
+test("the input hash ignores order and data outside the period and the one before", () => {
+	const period = periodOf("daily", Date.parse("2026-11-12T12:00:00Z"), TZ);
+	const row = (h, cost) => ({ hour: period.start + h * HOUR_MS, sessionId: "s", agent: "main", feature: "user", provider: "anthropic", model: "m", account: "acc", device: "a", project: "p", title: "t", requests: 1, cost });
+	const snap = { device: "a", account: "acc", limitId: "5h", recordedAt: period.start + HOUR_MS, usedFraction: 0.2 };
+	const base = inputHash(period, [row(2, 1), row(-3, 2)], [snap], { acc: "me" }, TZ);
+	assert.equal(inputHash(period, [row(-3, 2), row(2, 1), row(-48, 9)], [snap], { acc: "me", other: "x" }, TZ), base, "reordered, older row, unused label");
+	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 5)], [snap], { acc: "me" }, TZ), base, "the previous day feeds the KPI comparison");
+	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2)], [{ ...snap, usedFraction: 0.3 }], { acc: "me" }, TZ), base);
+	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2)], [snap], { acc: "renamed" }, TZ), base);
+	assert.notEqual(inputHash(period, [row(2, 1), row(-3, 2), { ...row(2, 1), device: "b" }], [snap], { acc: "me" }, TZ), base, "a new device's rows");
 });
 
 test("a period is ready once every active device synced after its end, or after the maximum wait", () => {

@@ -3,9 +3,11 @@
  * Host-side usage collector: parses this device's omp session logs, fetches limit snapshots and
  * account identities from `omp usage`, writes them into the device's directory of the usage
  * repository (store.mjs), then commits, pulls with rebase and pushes. Afterwards it writes the
- * HTML report of every completed day, ISO week and month that has none yet (digest.mjs, page.mjs)
- * and pushes those. `--loop` repeats hourly (the `usagesync` fish function runs it that way);
- * `--no-git` stops after writing.
+ * HTML report of every completed day, ISO week and month since the oldest data that is missing or
+ * was rendered from other data (digest.mjs, page.mjs) and pushes those. `--loop` repeats hourly
+ * (the `usagesync` fish function runs it that way);
+ * `--no-git` stops after writing; `--backfill` re-reads all session logs and all limit history
+ * this device still has (merged by key, so safe to repeat).
  *
  * Config `~/.pi/usage/config.json`:
  * `{ "repo": "~/github/agent-usage", "device": "<optional name>", "timezone": "<optional, default Europe/Berlin>" }`.
@@ -18,15 +20,15 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { completedPeriods, digest, isReady, KINDS, lastSeen, localParts, previousPeriod } from "./digest.mjs";
-import { renderIndex, renderReport, reportPath } from "./page.mjs";
-import { accountHash, HOUR_MS, scanSessions } from "./parse.mjs";
+import { completedPeriods, digest, inputHash, isReady, KINDS, lastSeen, localParts } from "./digest.mjs";
+import { renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
+import { accountHash, scanSessions } from "./parse.mjs";
 import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
 
 const RESCAN_MS = 2 * 24 * 3_600_000;
+// All of omp's usage_history: `omp usage --history` accepts any day count and returns what it has.
+const FULL_HISTORY_DAYS = 3650;
 export const DEFAULT_TIMEZONE = "Europe/Berlin";
-// Closed-window medians of the untracked-use flag look back 30 days.
-const MEDIAN_LOOKBACK_MS = 31 * 24 * HOUR_MS;
 
 export const configPath = () => join(homedir(), ".pi", "usage", "config.json");
 
@@ -135,15 +137,17 @@ export function ompUsage(days) {
 }
 
 /**
- * Writes this device's rows, snapshots and labels into the repository.
+ * Writes this device's rows, snapshots and labels into the repository. The first run of a device,
+ * and every run with `backfill`, parses all session logs and all limit history omp keeps; other
+ * runs parse logs modified in the last two days and three days of history.
  *
- * @param {{repo: string, device: string, sessionsDir: string, now: number, usage: (days: number) => {reports: any[], history: any[]}}} opts
+ * @param {{repo: string, device: string, sessionsDir: string, now: number, usage: (days: number) => {reports: any[], history: any[]}, backfill?: boolean}} opts
  */
-export async function collect({ repo, device, sessionsDir, now, usage }) {
+export async function collect({ repo, device, sessionsDir, now, usage, backfill = false }) {
 	const deviceDir = join(repo, "devices", device);
-	const firstRun = !existsSync(join(deviceDir, "hourly"));
-	const scan = await scanSessions(sessionsDir, firstRun ? 0 : now - RESCAN_MS);
-	const { reports, history } = usage(firstRun ? 30 : 3);
+	const full = backfill || !existsSync(join(deviceDir, "hourly"));
+	const scan = await scanSessions(sessionsDir, full ? 0 : now - RESCAN_MS);
+	const { reports, history } = usage(full ? FULL_HISTORY_DAYS : 3);
 	const { labels, byProvider, snapshots, unmatched } = accountsAndLimits(reports, history);
 	const changed =
 		writeRows(deviceDir, resolveUnpinned(scan.rows, byProvider)) +
@@ -215,25 +219,38 @@ export function listReports(repo) {
 	return out;
 }
 
+function readIfExists(file) {
+	try {
+		return readFileSync(file, "utf8");
+	} catch {
+		return "";
+	}
+}
+
 /**
- * Writes the report of every completed period (digest.mjs `completedPeriods`) that has no file in
- * `reports/` yet and is ready (`isReady`), then rewrites `reports/index.html`. A file already in
- * the checkout is never rewritten: the first device to push a period's report wins.
+ * Writes the report of every ready period (`isReady`) from the oldest row or snapshot in the
+ * repository to the last completed one, when its file is missing or was rendered from other data
+ * (digest.mjs `inputHash`, stored in the page), then rewrites `reports/index.html`. A new device or
+ * a backfill therefore rebuilds exactly the reports whose periods it added data to; when two
+ * devices hold the same data they compute the same hash, so the first push wins and stays.
  *
  * @returns {string[]} Paths written, relative to the repository.
  */
 export function writeReports({ repo, now, tz, device }) {
-	const missing = completedPeriods(now, tz).filter((p) => !existsSync(join(repo, "reports", reportPath(p))));
-	if (!missing.length) return [];
-	const since = Math.min(now - MEDIAN_LOOKBACK_MS, ...missing.map((p) => previousPeriod(p, tz).start));
-	const { rows, limits, labels } = readRepo(repo, { since });
+	const { rows, limits, labels } = readRepo(repo);
+	let first = Number.POSITIVE_INFINITY;
+	for (const r of rows) first = Math.min(first, r.hour);
+	for (const s of limits) first = Math.min(first, s.recordedAt);
+	if (!Number.isFinite(first)) return [];
 	const seen = lastSeen(rows, limits);
 	const written = [];
-	for (const period of missing) {
+	for (const period of completedPeriods(first, now, tz)) {
 		if (!isReady(period, rows, seen, now)) continue;
 		const path = join("reports", reportPath(period));
+		const hash = inputHash(period, rows, limits, labels, tz);
+		if (storedHash(readIfExists(join(repo, path))) === hash) continue;
 		mkdirSync(dirname(join(repo, path)), { recursive: true });
-		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device })));
+		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device }), hash));
 		written.push(path);
 	}
 	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo)));
@@ -242,8 +259,8 @@ export function writeReports({ repo, now, tz, device }) {
 
 /**
  * Commits `reports/` and pushes. When the push is rejected (another device pushed first) the
- * commit is dropped with `reset --keep`; the next run pulls and writes only what is still missing,
- * so the report already upstream wins and no rebase ever conflicts on a report.
+ * commit is dropped with `reset --keep`; the next run pulls and rebuilds only reports whose data
+ * still differs, so the report already upstream wins and no rebase ever conflicts on a report.
  */
 export function pushReports(repo) {
 	if (!commitPath(repo, "reports", "usage: reports")) return "reports unchanged";
@@ -269,6 +286,7 @@ async function main() {
 		sessionsDir: join(homedir(), ".omp", "agent", "sessions"),
 		now,
 		usage: ompUsage,
+		backfill: process.argv.includes("--backfill"),
 	});
 	const noGit = process.argv.includes("--no-git");
 	let outcome = "git skipped";
