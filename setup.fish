@@ -149,3 +149,5 @@ else
 end
 
 echo "done. Start the proxies now and after each login with my-pi-start (my-pi-start restart restarts them all), then run /mcp reconnect github and /mcp reconnect jira in omp."
+# DEV-NOTE: conf.d is read at shell start, so a shell opened before the first run lacks the repo's functions.
+echo "The repo's fish functions (usagesync, ghmcp, jiramcp, ...) load in new fish shells: run exec fish or open a new tab."
