@@ -143,6 +143,30 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
 - [x] **Phase 5 — Docs**
   - Files: `extensions/usage/index.ts` header (config, repo layout, sync, privacy), this spec's state.
 
+- [x] **Phase 6 — HTML reports (daily, weekly, monthly)**
+  - Files: `extensions/usage/digest.mjs` (periods, readiness, figures), `extensions/usage/page.mjs`
+    (HTML), `extensions/usage/collect.mjs` (`writeReports`, `pushReports`), tests `digest.test.mjs`,
+    `page.test.mjs`, `collect.test.mjs`; `report.mjs` exports `durationOf`, `limitDelta` and
+    `untrackedRatio` for reuse.
+  - Periods: local day, ISO week (Monday start) and month in `timezone` of the config (default
+    `Europe/Berlin`). Each run checks the last 7 days, 4 weeks and 2 months for a missing file.
+  - Ready: once every device with rows in the period shows a row or snapshot after its end, or
+    24 hours after the end at the latest (an asleep device cannot block a report forever).
+  - First device wins: reports are written only when `reports/<kind>/<key>.html` is missing in the
+    checkout just pulled; they are committed apart from device data and pushed; a rejected push drops
+    the report commit (`reset --keep HEAD~1`) and the next run pulls the winner. A report is never
+    rewritten, so late rows of a device that synced after the 24-hour limit stay out of it.
+  - Page: one self-contained HTML file (inline CSS and SVG, no scripts, light and dark themes):
+    KPIs against the previous period; per-account limit chart with peak, time at 90%+ or 100%, pace
+    of 7-day-or-longer windows, and the untracked-use flag; cost over time by top project; projects
+    by account; features with the automatic share; weekday × hour heatmap (weekly, monthly);
+    calendar and ISO-week bars (monthly); top sessions; token kinds with estimated cost shares;
+    models, agents and devices (single-value mixes collapse to one line); device sync state.
+    `reports/index.html` lists every report.
+  - Verify: `node --test extensions/usage/` (33 pass); reports generated from a copy of the real
+    repository and their charts inspected as rendered SVG. Not run: a full page in a browser (the
+    sandbox blocks Chrome), the hourly loop end to end.
+
 ## Alternatives not taken
 
 - Read `~/.omp/stats.db`: internal schema, no account column, filled only by `omp stats`.

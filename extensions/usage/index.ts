@@ -8,15 +8,19 @@
  *
  * Cross-device data: a private git repository (decision 2026-11-13: personal GitHub account,
  * default `agent-usage`), configured in `~/.pi/usage/config.json`:
- *   { "repo": "~/github/agent-usage", "device": "<optional, default hostname-installid>" }
+ *   { "repo": "~/github/agent-usage", "device": "<optional, default hostname-installid>",
+ *     "timezone": "<optional IANA zone of the report periods, default Europe/Berlin>" }
  * The host loop `usagesync` (my-pi/fish/functions/usagesync.fish, started by my-pi-start) runs
  * collect.mjs hourly: it writes `devices/<device>/` (store.mjs layout) and commits, pulls with
  * rebase and pushes. Each device writes only its own directory, so pulls never conflict. A root
  * `accounts.json` ({ "<account hash>": "<label>" }) overrides the labels devices write.
+ * After the pull it writes `reports/{daily,weekly,monthly}/<period>.html` and `reports/index.html`
+ * for completed periods that have none yet; the first device to push a report wins.
  *
  * Privacy: rows carry session titles and project folder names, passed through the secret
  * redactor, and account labels name the account e-mail. Work session titles therefore leave
- * work-controlled storage (accepted risk, notes/specs/2026-11-13-usage-tracker.md).
+ * work-controlled storage (accepted risk, notes/specs/2026-11-13-usage-tracker.md); the reports
+ * show the same titles, labels and project names.
  *
  * Without the config file the tool reports this device only.
  */

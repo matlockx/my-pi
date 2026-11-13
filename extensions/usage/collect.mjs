@@ -2,23 +2,31 @@
 /**
  * Host-side usage collector: parses this device's omp session logs, fetches limit snapshots and
  * account identities from `omp usage`, writes them into the device's directory of the usage
- * repository (store.mjs), then commits, pulls with rebase and pushes. `--loop` repeats hourly (the
- * `usagesync` fish function runs it that way); `--no-git` stops after writing.
+ * repository (store.mjs), then commits, pulls with rebase and pushes. Afterwards it writes the
+ * HTML report of every completed day, ISO week and month that has none yet (digest.mjs, page.mjs)
+ * and pushes those. `--loop` repeats hourly (the `usagesync` fish function runs it that way);
+ * `--no-git` stops after writing.
  *
- * Config `~/.pi/usage/config.json`: `{ "repo": "~/github/agent-usage", "device": "<optional name>" }`.
+ * Config `~/.pi/usage/config.json`:
+ * `{ "repo": "~/github/agent-usage", "device": "<optional name>", "timezone": "<optional, default Europe/Berlin>" }`.
  * Runs on the host, not in the omp sandbox, where git over SSH cannot read known_hosts.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { accountHash, scanSessions } from "./parse.mjs";
-import { deviceName, writeAccounts, writeLimits, writeRows } from "./store.mjs";
+import { completedPeriods, digest, isReady, KINDS, lastSeen, localParts, previousPeriod } from "./digest.mjs";
+import { renderIndex, renderReport, reportPath } from "./page.mjs";
+import { accountHash, HOUR_MS, scanSessions } from "./parse.mjs";
+import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
 
 const RESCAN_MS = 2 * 24 * 3_600_000;
+export const DEFAULT_TIMEZONE = "Europe/Berlin";
+// Closed-window medians of the untracked-use flag look back 30 days.
+const MEDIAN_LOOKBACK_MS = 31 * 24 * HOUR_MS;
 
 export const configPath = () => join(homedir(), ".pi", "usage", "config.json");
 
@@ -28,7 +36,16 @@ const expand = (p) => p.replace(/^~(?=\/|$)/, homedir());
 export function loadConfig(path = configPath()) {
 	const config = JSON.parse(readFileSync(path, "utf8"));
 	if (typeof config.repo !== "string" || !config.repo) throw new Error(`${path}: "repo" is missing`);
-	return { ...config, repo: expand(config.repo) };
+	return { ...config, repo: expand(config.repo), timezone: config.timezone ?? DEFAULT_TIMEZONE };
+}
+
+/** Throws when tz is not an IANA time zone the runtime knows. */
+export function checkTimezone(tz) {
+	try {
+		localParts(0, tz);
+	} catch {
+		throw new Error(`${configPath()}: "timezone" ${JSON.stringify(tz)} is not a known IANA time zone`);
+	}
 }
 
 /** This device's directory name: config `device`, else hostname plus omp install id. */
@@ -139,6 +156,19 @@ function git(repo, args) {
 	return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+/** Stages path and commits it alone when it changed; returns whether a commit was made. */
+function commitPath(repo, path, message) {
+	git(repo, ["add", "--", path]);
+	try {
+		git(repo, ["diff", "--cached", "--quiet", "--", path]);
+		return false;
+	} catch {
+		// Pathspec: changes someone staged elsewhere in the checkout stay out of this commit.
+		git(repo, ["commit", "--quiet", "-m", message, "--", path]);
+		return true;
+	}
+}
+
 /**
  * Commits the device directory, rebases onto the remote and pushes. A failed rebase is aborted and
  * reported, never forced; the next run retries.
@@ -146,16 +176,7 @@ function git(repo, args) {
  * @returns {string} One line describing the outcome.
  */
 export function sync(repo, device) {
-	const dir = join("devices", device);
-	git(repo, ["add", "--", dir]);
-	let committed = false;
-	try {
-		git(repo, ["diff", "--cached", "--quiet", "--", dir]);
-	} catch {
-		// Pathspec: changes someone staged elsewhere in the checkout stay out of this commit.
-		git(repo, ["commit", "--quiet", "-m", `usage: ${device}`, "--", dir]);
-		committed = true;
-	}
+	const committed = commitPath(repo, join("devices", device), `usage: ${device}`);
 	if (!git(repo, ["remote"]).trim()) return committed ? "committed (no remote)" : "unchanged (no remote)";
 	try {
 		git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"]);
@@ -179,17 +200,86 @@ export function sync(repo, device) {
 	return committed ? "pushed" : "pulled";
 }
 
+/** Report keys per kind in the repository's reports directory, newest first. */
+export function listReports(repo) {
+	const out = {};
+	for (const kind of KINDS) {
+		let names = [];
+		try {
+			names = readdirSync(join(repo, "reports", kind));
+		} catch {
+			// No report of this kind yet.
+		}
+		out[kind] = names.filter((n) => n.endsWith(".html")).map((n) => n.slice(0, -5)).sort().reverse();
+	}
+	return out;
+}
+
+/**
+ * Writes the report of every completed period (digest.mjs `completedPeriods`) that has no file in
+ * `reports/` yet and is ready (`isReady`), then rewrites `reports/index.html`. A file already in
+ * the checkout is never rewritten: the first device to push a period's report wins.
+ *
+ * @returns {string[]} Paths written, relative to the repository.
+ */
+export function writeReports({ repo, now, tz, device }) {
+	const missing = completedPeriods(now, tz).filter((p) => !existsSync(join(repo, "reports", reportPath(p))));
+	if (!missing.length) return [];
+	const since = Math.min(now - MEDIAN_LOOKBACK_MS, ...missing.map((p) => previousPeriod(p, tz).start));
+	const { rows, limits, labels } = readRepo(repo, { since });
+	const seen = lastSeen(rows, limits);
+	const written = [];
+	for (const period of missing) {
+		if (!isReady(period, rows, seen, now)) continue;
+		const path = join("reports", reportPath(period));
+		mkdirSync(dirname(join(repo, path)), { recursive: true });
+		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device })));
+		written.push(path);
+	}
+	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo)));
+	return written;
+}
+
+/**
+ * Commits `reports/` and pushes. When the push is rejected (another device pushed first) the
+ * commit is dropped with `reset --keep`; the next run pulls and writes only what is still missing,
+ * so the report already upstream wins and no rebase ever conflicts on a report.
+ */
+export function pushReports(repo) {
+	if (!commitPath(repo, "reports", "usage: reports")) return "reports unchanged";
+	if (!git(repo, ["remote"]).trim()) return "reports committed (no remote)";
+	try {
+		git(repo, ["push", "--quiet", "origin", "HEAD"]);
+		return "reports pushed";
+	} catch (error) {
+		git(repo, ["reset", "--quiet", "--keep", "HEAD~1"]);
+		return `reports dropped, next run retries: ${error.stderr?.trim() || error.message}`;
+	}
+}
+
 async function main() {
 	const config = loadConfig();
+	// DEV-NOTE: checked here, not in loadConfig: the usage_report tool reads the same config and needs no time zone.
+	checkTimezone(config.timezone);
 	const device = localDevice(config);
+	const now = Date.now();
 	const result = await collect({
 		repo: config.repo,
 		device,
 		sessionsDir: join(homedir(), ".omp", "agent", "sessions"),
-		now: Date.now(),
+		now,
 		usage: ompUsage,
 	});
-	const outcome = process.argv.includes("--no-git") ? "git skipped" : sync(config.repo, device);
+	const noGit = process.argv.includes("--no-git");
+	let outcome = "git skipped";
+	if (!noGit) {
+		outcome = sync(config.repo, device);
+		// DEV-NOTE: after sync, so the checkout holds the other devices' latest rows and reports.
+		const reports = writeReports({ repo: config.repo, now, tz: config.timezone, device });
+		// Runs every time: it also commits a report left uncommitted by an interrupted run.
+		const pushed = pushReports(config.repo);
+		if (reports.length || pushed !== "reports unchanged") outcome += `, ${reports.length} reports written, ${pushed}`;
+	}
 	console.log(
 		`${new Date().toISOString()} ${device}: ${result.files} logs, ${result.rows} rows, ` +
 			`${result.snapshots} snapshots (${result.unmatched} unmatched), ${result.changed} files changed, ${outcome}`,

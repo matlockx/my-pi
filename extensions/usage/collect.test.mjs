@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { accountsAndLimits, collect, resolveUnpinned, sync } from "./collect.mjs";
+import { accountsAndLimits, collect, pushReports, resolveUnpinned, sync, writeReports } from "./collect.mjs";
 import { accountHash } from "./parse.mjs";
 import { readRepo } from "./store.mjs";
 
@@ -106,4 +106,44 @@ test("two devices push to one remote in turn without conflicts, and a re-run wri
 			["mac-b", 2, A],
 		],
 	);
+});
+
+test("the first device to push a period's report wins, and the loser drops its copy without a conflict", async () => {
+	const root = mkdtempSync(join(tmpdir(), "usage-reports-"));
+	const remote = join(root, "remote.git");
+	git(root, "init", "--quiet", "--bare", remote);
+	const [a, b] = [join(root, "a"), join(root, "b")];
+	const usage = () => ({ reports, history });
+	clone(remote, a);
+	await collect({ repo: a, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+	sync(a, "mac-a");
+	clone(remote, b);
+	await collect({ repo: b, device: "mac-b", sessionsDir: sessions(2), now: NOW, usage });
+	sync(b, "mac-b");
+	sync(a, "mac-a");
+
+	// Both checkouts hold both devices' rows; 2026-11-13 ends at 23:00Z in Berlin, so the day is due
+	// 24 hours later even though no snapshot shows a sync after its end.
+	const later = Date.parse("2026-11-14T23:00:00.000Z");
+	const day = join("reports", "daily", "2026-11-13.html");
+	assert.ok(writeReports({ repo: a, now: later, tz: "Europe/Berlin", device: "mac-a" }).includes(day));
+	assert.ok(writeReports({ repo: b, now: later, tz: "Europe/Berlin", device: "mac-b" }).includes(day));
+	assert.equal(pushReports(a), "reports pushed");
+	assert.match(pushReports(b), /^reports dropped/);
+	assert.equal(existsSync(join(b, day)), false, "the losing copy is gone with its commit");
+
+	assert.equal(sync(b, "mac-b"), "pulled");
+	assert.deepEqual(writeReports({ repo: b, now: later, tz: "Europe/Berlin", device: "mac-b" }), [], "nothing left to write");
+	assert.match(readFileSync(join(b, day), "utf8"), /by mac-a\./);
+	assert.equal(pushReports(b), "reports unchanged");
+});
+
+test("a day stays unreported while an active device has not synced after it, at most 24 hours", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-wait-"));
+	git(repo, "init", "--quiet");
+	const usage = () => ({ reports: [], history: [] });
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+	const day = join("reports", "daily", "2026-11-13.html");
+	assert.equal(writeReports({ repo, now: Date.parse("2026-11-14T02:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day), false);
+	assert.ok(writeReports({ repo, now: Date.parse("2026-11-14T23:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day));
 });

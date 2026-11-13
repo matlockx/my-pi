@@ -13,7 +13,7 @@ export const GROUP_KEYS = ["account", "provider", "model", "session", "project",
 const DURATIONS = { "5 Hour": 5 * HOUR_MS, "7 Day": 7 * 24 * HOUR_MS };
 const LIMIT_WINDOWS = { "5h": "5 Hour", "7d": "7 Day" };
 const MEDIAN_DAYS = 30;
-const UNTRACKED_FACTOR = 2;
+export const UNTRACKED_FACTOR = 2;
 
 /**
  * Resolves the window argument.
@@ -66,7 +66,8 @@ function seriesByLimit(snapshots, account) {
 	return series;
 }
 
-const durationOf = (s) => s.durationMs ?? DURATIONS[s.window];
+/** Length of a snapshot's limit window in ms, from the snapshot or its window label; undefined when unknown. */
+export const durationOf = (s) => s.durationMs ?? DURATIONS[s.window];
 
 /** Start of the account's current limit window with the given label, or undefined. */
 function limitStart(series, label) {
@@ -106,6 +107,17 @@ export function closedWindowRatios(points, rows, now) {
 		if (weight > 0 && used > 0) ratios.push(used / weight);
 	}
 	return ratios;
+}
+
+/**
+ * How many times a limit's increase per tracked weight over [start, end] exceeds its median over
+ * closed windows; 0 when there is no increase or no history, Infinity when nothing tracked explains it.
+ */
+export function untrackedRatio(points, rows, delta, start, end, now) {
+	const weight = weightIn(rows, start, end);
+	const typical = median(closedWindowRatios(points, rows, now));
+	if (!typical || delta <= 0) return 0;
+	return weight > 0 ? delta / weight / typical : Number.POSITIVE_INFINITY;
 }
 
 function groupValue(row, key, labels) {
@@ -166,9 +178,7 @@ function limitLine(limitId, points, rows, start, ctx) {
 	const delta = own ? (latest.usedFraction ?? 0) : limitDelta(points, start, window.until);
 	const label = latest.label ?? limitId;
 	let line = `- ${label}: now ${pct(latest.usedFraction ?? 0)}${latest.resetsAt ? `, resets ${time(latest.resetsAt)}` : ""}; used in window +${pct(delta)}`;
-	const weight = weightIn(rows, start, window.until);
-	const typical = median(closedWindowRatios(points, rows, now));
-	const ratio = typical && delta > 0 ? (weight > 0 ? delta / weight / typical : Number.POSITIVE_INFINITY) : 0;
+	const ratio = untrackedRatio(points, rows, delta, start, window.until, now);
 	if (ratio >= UNTRACKED_FACTOR)
 		line += ` — ${Number.isFinite(ratio) ? `${ratio.toFixed(1)}x` : "far above"} the usual % per tracked cost; possible causes: usage outside tracked omp sessions (claude.ai, other tools, a device not synced) or a changed limit rate`;
 	return { label, delta, line };
