@@ -16,7 +16,7 @@ export const ALL_TIME = "alltime";
 /** Every report kind, in index order. */
 export const REPORT_KINDS = [...KINDS, ALL_TIME];
 /** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
-export const REPORT_VERSION = 3;
+export const REPORT_VERSION = 4;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -425,7 +425,8 @@ export function digest({ period, rows, limits, labels, tz, now, generator, hasNe
 		sessions: topSessions(current, labelOf),
 		features,
 		automatic: features.filter((f) => !isUser(f.name)).reduce((s, f) => s + f.value, 0),
-		models: sumBy(current, (r) => r.model),
+		// Providers name the same model differently (anthropic claude-opus-4-8, github-copilot claude-opus-4.8) and bill it apart.
+		models: sumBy(current, (r) => `${r.provider}/${r.model}`),
 		agents: sumBy(current, (r) => r.agent),
 		tokenMix: tokenMix(current),
 		devices: [...seen.keys()].sort().map((name) => ({ name, cost: current.filter((r) => r.device === name).reduce((s, r) => s + r.cost, 0), lastSeen: seen.get(name) })),

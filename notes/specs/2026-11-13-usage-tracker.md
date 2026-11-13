@@ -185,9 +185,10 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
     of 7-day-or-longer windows, and the untracked-use flag; cost over time by top project; projects
     by account; features with the automatic share; weekday × hour heatmap (weekly, monthly);
     calendar and ISO-week bars (monthly); top sessions; token kinds with estimated cost shares;
-    models, agents and devices (single-value mixes collapse to one line); device sync state.
+    models as `provider/model` (Anthropic and Copilot spell the same model differently and bill it
+    apart), agents and devices (single-value mixes collapse to one line); device sync state.
     `reports/index.html` lists every report.
-  - Verify: `node --test extensions/usage/` (40 pass); reports generated from a copy of the real
+  - Verify: `node --test extensions/usage/` (43 pass); reports generated from a copy of the real
     repository and their charts inspected as rendered SVG. Not run: a full page in a browser (the
     sandbox blocks Chrome), the hourly loop end to end.
 

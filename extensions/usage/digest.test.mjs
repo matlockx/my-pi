@@ -110,6 +110,14 @@ test("digest sums the period, splits automation, drops idle limits and flags unl
 	assert.equal(d.previousTotals.cost, 7);
 	assert.equal(d.totals.cacheHit, 0.9);
 	assert.equal(d.automatic, 1, "slash commands count as your prompts");
+	assert.deepEqual(
+		digest({ period, rows: [row(9, "user", 2), { ...row(10, "user", 1), provider: "github-copilot" }], limits: [], labels: {}, tz: TZ, now: period.end, generator: "a" }).models,
+		[
+			{ name: "anthropic/m", value: 2 },
+			{ name: "github-copilot/m", value: 1 },
+		],
+		"one model name at two providers stays two rows",
+	);
 	const [mine, other] = d.accounts;
 	assert.deepEqual([mine.label, mine.labelled, mine.limits.map((l) => [l.id, l.peak])], ["anthropic: me", true, [["5h", 0.6]]]);
 	assert.deepEqual([other.label, other.labelled], ["account other-ha", false]);
