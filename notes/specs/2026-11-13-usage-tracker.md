@@ -155,13 +155,17 @@ assistant reply (`memory-recall`, `image-attachment`) do not override it. `model
   - Periods: local day, ISO week (Monday start), month and year in `timezone` of the config (default
     `Europe/Berlin`). Each run covers every period from the one holding the oldest row or snapshot in
     the repository (`reportPeriods`); idle periods in between get the empty-state page. One all-time
-    report (`reports/alltime/all.html`) runs from the oldest data's day to the last ready day: always
+    report (`reports/alltime/all.html`) runs from the oldest data's day to the end of the latest day's data: always
     running, no comparison and no neighbour links.
   - Ready: once every device with rows in the period shows a row or snapshot after its end, or
-    24 hours after the end at the latest (an asleep device cannot block a report forever). A day is
-    reported once ready. The current week, month and year, and an ended one not ready yet, get a
-    running report with `cutoff` = end of their last ready day: updated once a day, marked "running"
-    on the page and in the index, KPIs compared with the same span of the period before.
+    24 hours after the end at the latest (an asleep device cannot block a report forever). An ended
+    ready day is final. Today and an ended day not ready yet are provisional ("so far"): `cutoff` =
+    end of the hour of the newest row or snapshot in the day, so the report changes only with new
+    data, and is rebuilt as final once the day is ready; a provisional day without data is left out.
+    The current week, month and year, an ended one not ready yet, and the all-time report get a
+    running report whose `cutoff` is the last of their days' cutoffs (a final day counts to its end):
+    updated as devices sync, marked "running" on the page and in the index, KPIs compared with the
+    same span of the period before.
   - Year and all time: cost per month instead of per day, a GitHub-style grid of every day (active
     days, busiest day), only the 7-day-or-longer limit lines, at most 500 points per line (highest
     snapshot per slot), and the device split. The index leads with an all-time card.

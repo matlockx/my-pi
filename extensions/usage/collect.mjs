@@ -21,7 +21,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { digest, inputHash, isReady, lastSeen, localParts, nextPeriod, REPORT_KINDS, reportPeriods } from "./digest.mjs";
+import { dataUntil, digest, inputHash, isReady, lastSeen, localParts, nextPeriod, REPORT_KINDS, reportPeriods } from "./digest.mjs";
 import { findingSummaries, improvementEffect, rankOpen } from "./ledger.mjs";
 import { renderGuardian, renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
 import { accountHash, scanSessions } from "./parse.mjs";
@@ -242,8 +242,9 @@ function readIfExists(file) {
  * Writes the report of every period digest.mjs `reportPeriods` names, from the oldest row or
  * snapshot in the repository to the running week and month, when its file is missing or was
  * rendered from other data (`inputHash`, stored in the page), then rewrites `reports/index.html`.
- * A running week or month is rebuilt once a day, when its next day becomes ready; a new device or a
- * backfill rebuilds exactly the reports whose periods it added data to. Devices holding the same
+ * Today and an ended day waiting for a device are provisional ("so far"): rebuilt whenever newer
+ * data arrives, and as final once ready. A new device or a backfill rebuilds exactly the reports
+ * whose periods it added data to. Devices holding the same
  * data compute the same hash, so the first push wins and stays.
  *
  * @returns {string[]} Paths written, relative to the repository.
@@ -256,7 +257,7 @@ export function writeReports({ repo, now, tz, device }) {
 	for (const s of limits) first = Math.min(first, s.recordedAt);
 	if (!Number.isFinite(first)) return [];
 	const seen = lastSeen(rows, limits);
-	const periods = reportPeriods(first, now, tz, (p) => isReady(p, rows, seen, now));
+	const periods = reportPeriods(first, now, tz, (p) => isReady(p, rows, seen, now), (d) => dataUntil(d, rows, limits));
 	// DEV-NOTE: the forward link needs the next period's report to exist; once it appears, the hash change rebuilds this one.
 	const planned = new Set(periods.map(reportPath));
 	const written = [];

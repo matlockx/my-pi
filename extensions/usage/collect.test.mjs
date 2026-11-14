@@ -68,11 +68,11 @@ function clone(remote, dir) {
 	git(dir, "config", "commit.gpgsign", "false");
 }
 
-function sessions(cost, extra = []) {
+function sessions(cost, extra = [], shift = 0) {
 	const dir = mkdtempSync(join(tmpdir(), "usage-sessions-"));
 	const id = "01a1a136-b5fd-77f9-8e1d-040fb9157988";
 	mkdirSync(join(dir, "-shop"));
-	const at = (m) => new Date(NOW - 3_600_000 + m * 60_000).toISOString();
+	const at = (m) => new Date(NOW + shift - 3_600_000 + m * 60_000).toISOString();
 	const lines = [
 		{ type: "session", id, timestamp: at(0), cwd: "/x/shop" },
 		{ type: "message", timestamp: at(1), message: { role: "user", content: "go" } },
@@ -163,14 +163,75 @@ test("the first device to push a period's report wins, and the loser drops its c
 	assert.equal(pushReports(b), "reports unchanged");
 });
 
-test("a day stays unreported while an active device has not synced after it, at most 24 hours", async () => {
+test("a day waiting for a device is provisional, and rebuilt as final once it syncs or the wait ends", async () => {
 	const repo = mkdtempSync(join(tmpdir(), "usage-wait-"));
 	git(repo, "init", "--quiet");
 	const usage = () => ({ reports: [], history: [] });
+	const tz = "Europe/Berlin";
 	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
 	const day = join("reports", "daily", "2026-11-13.html");
-	assert.equal(writeReports({ repo, now: Date.parse("2026-11-14T02:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day), false);
-	assert.ok(writeReports({ repo, now: Date.parse("2026-11-14T23:00:00.000Z"), tz: "Europe/Berlin", device: "mac-b" }).includes(day));
+	const early = Date.parse("2026-11-14T02:00:00.000Z");
+	assert.ok(writeReports({ repo, now: early, tz, device: "mac-b" }).includes(day), "provisional, not absent");
+	assert.match(readFileSync(join(repo, day), "utf8"), /· so far/);
+	assert.deepEqual(writeReports({ repo, now: early, tz, device: "mac-b" }), [], "no new data: nothing rewritten");
+	assert.deepEqual(writeReports({ repo, now: early + 3_600_000, tz, device: "mac-b" }), [], "the clock alone rebuilds nothing");
+
+	const final = writeReports({ repo, now: Date.parse("2026-11-14T23:00:00.000Z"), tz, device: "mac-b" });
+	assert.ok(final.includes(day), "the maximum wait ends: rebuilt as final");
+	assert.doesNotMatch(readFileSync(join(repo, day), "utf8"), /· so far/);
+});
+
+test("a provisional day turns final once the device that holds it back syncs after the day", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-late-"));
+	git(repo, "init", "--quiet");
+	const usage = () => ({ reports: [], history: [] });
+	const tz = "Europe/Berlin";
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+	const day = join("reports", "daily", "2026-11-13.html");
+	const now = Date.parse("2026-11-14T10:00:00.000Z");
+	writeReports({ repo, now, tz, device: "mac-a" });
+	assert.match(readFileSync(join(repo, day), "utf8"), /· so far/);
+
+	// The device syncs later: a limit snapshot after the day's end makes the day ready.
+	const late = [{ ...reports[0], fetchedAt: Date.parse("2026-11-14T00:30:00.000Z") }];
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: now - 1, usage: () => ({ reports: late, history: [] }) });
+	const rebuilt = writeReports({ repo, now, tz, device: "mac-a" });
+	assert.ok(rebuilt.includes(day));
+	assert.doesNotMatch(readFileSync(join(repo, day), "utf8"), /· so far/);
+	assert.deepEqual(writeReports({ repo, now, tz, device: "mac-a" }), []);
+});
+
+test("today gets a provisional report, the running week and month cover it, and the index lists both as running", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-today-"));
+	git(repo, "init", "--quiet");
+	const usage = () => ({ reports: [], history: [] });
+	const tz = "Europe/Berlin";
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+	await collect({ repo, device: "mac-b", sessionsDir: sessions(2, [], 24 * 3_600_000), now: NOW, usage });
+	const now = Date.parse("2026-11-14T12:00:00.000Z");
+	const written = writeReports({ repo, now, tz, device: "mac-a" });
+	const path = (kind, key) => join("reports", kind, `${key}.html`);
+	for (const p of [path("daily", "2026-11-13"), path("daily", "2026-11-14"), path("weekly", "2026-W46"), path("monthly", "2026-11")]) assert.ok(written.includes(p), p);
+	const page = (p) => readFileSync(join(repo, p), "utf8");
+	assert.match(page(path("daily", "2026-11-14")), /· so far/);
+	assert.match(page(path("weekly", "2026-W46")), /data up to and including Sat 14 Nov/);
+	assert.match(page(path("daily", "2026-11-13")), /href="\.\.\/daily\/2026-11-14\.html">2026-11-14 →/, "yesterday links to today");
+	const index = page(join("reports", "index.html"));
+	for (const p of ["daily/2026-11-13", "daily/2026-11-14", "weekly/2026-W46", "monthly/2026-11"]) assert.match(index, new RegExp(`${p}\\.html[^]*?<em class="badge">running</em>`));
+	assert.equal((index.match(/<em class="badge">running<\/em>/g) ?? []).length, 5, "both days, the week, the month and the year");
+	assert.deepEqual(writeReports({ repo, now, tz, device: "mac-a" }), [], "a second run without new data writes nothing");
+});
+
+test("a final ready day keeps its hash when a later day appears", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-final-"));
+	git(repo, "init", "--quiet");
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage: () => ({ reports: [], history: [] }) });
+	const tz = "Europe/Berlin";
+	const day = join("reports", "daily", "2026-11-13.html");
+	writeReports({ repo, now: Date.parse("2026-11-16T12:00:00.000Z"), tz, device: "mac-a" });
+	const before = readFileSync(join(repo, day), "utf8");
+	assert.deepEqual(writeReports({ repo, now: Date.parse("2026-11-16T15:00:00.000Z"), tz, device: "mac-a" }), [], "hours later, nothing changes");
+	assert.equal(readFileSync(join(repo, day), "utf8"), before);
 });
 
 test("reports reach back to the oldest data, and a new device rebuilds only the periods it adds data to", async () => {

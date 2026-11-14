@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { billingOf, digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, reportPeriods, timeAbove } from "./digest.mjs";
+import { billingOf, dataUntil, digest, inputHash, isReady, lastSeen, MAX_WAIT_MS, pace, periodOf, reportPeriods, timeAbove } from "./digest.mjs";
 import { HOUR_MS } from "./parse.mjs";
 
 const TZ = "Europe/Berlin";
@@ -18,25 +18,38 @@ test("periods follow local midnight across a DST change and use ISO week keys", 
 	assert.deepEqual([month.key, iso(month.start), iso(month.end)], ["2026-04", "2026-03-31T22:00:00.000Z", "2026-04-30T22:00:00.000Z"], "local time decides the month");
 });
 
-test("report periods run from the oldest data; the running week and month stop at their last ready day", () => {
+test("report periods run from the oldest data; today and not-ready days are provisional, up to their data", () => {
 	const now = Date.parse("2026-11-13T12:00:00Z");
-	const plan = (ready) => reportPeriods(Date.parse("2026-10-30T12:00:00Z"), now, TZ, ready);
-	const keys = (periods, kind) => periods.filter((p) => p.kind === kind).map((p) => (p.cutoff ? `${p.key}<${iso(p.cutoff)}` : p.key));
+	const dataEnd = Date.parse("2026-11-13T11:00:00Z");
+	// Data until 10:xx today, so a provisional day ends at 11:00; none on 2026-11-14.
+	const until = ({ key }) => (key === "2026-11-13" ? dataEnd : undefined);
+	const plan = (ready, at = until) => reportPeriods(Date.parse("2026-10-30T12:00:00Z"), now, TZ, ready, at);
+	const keys = (periods, kind) => periods.filter((p) => p.kind === kind).map((p) => (p.cutoff ? `${p["key"]}<${iso(p.cutoff)}` : p["key"]));
 	const all = plan(() => true);
 	const days = keys(all, "daily");
-	assert.deepEqual([days.length, days[0], days.at(-1)], [14, "2026-10-30", "2026-11-12"], "today is not reported until it ends");
-	assert.deepEqual(keys(all, "weekly"), ["2026-W44", "2026-W45", "2026-W46<2026-11-12T23:00:00.000Z"], "W46 runs up to the end of 12 November");
-	assert.deepEqual(keys(all, "monthly"), ["2026-10", "2026-11<2026-11-12T23:00:00.000Z"]);
-	assert.deepEqual(keys(all, "yearly"), ["2026<2026-11-12T23:00:00.000Z"]);
+	assert.deepEqual([days.length, days[0], days.at(-1)], [15, "2026-10-30", "2026-11-13<2026-11-13T11:00:00.000Z"], "today is reported so far");
+	assert.deepEqual(keys(all, "weekly"), ["2026-W44", "2026-W45", "2026-W46<2026-11-13T11:00:00.000Z"], "W46 covers today's data");
+	assert.deepEqual(keys(all, "monthly"), ["2026-10", "2026-11<2026-11-13T11:00:00.000Z"]);
+	assert.deepEqual(keys(all, "yearly"), ["2026<2026-11-13T11:00:00.000Z"]);
 	const [allTime] = all.filter((p) => p.kind === "alltime");
-	assert.deepEqual([allTime.key, iso(allTime.start), iso(allTime.end), allTime.cutoff], ["all", "2026-10-29T23:00:00.000Z", "2026-11-12T23:00:00.000Z", allTime.end], "from the oldest day to the last ready one");
+	assert.deepEqual([allTime["key"], iso(allTime.start), iso(allTime.end), allTime.cutoff], ["all", "2026-10-29T23:00:00.000Z", "2026-11-13T11:00:00.000Z", allTime.end], "from the oldest day to today's data");
 
-	const thursdayPending = plan((p) => p.key !== "2026-11-12");
-	assert.deepEqual(keys(thursdayPending, "weekly").at(-1), "2026-W46<2026-11-11T23:00:00.000Z", "a day not ready yet holds the cutoff back");
-	const mondayPending = plan((p) => p.key !== "2026-11-09");
-	assert.deepEqual(keys(mondayPending, "weekly").at(-1), "2026-W45", "no ready day yet: no running report");
-	const weekPending = plan((p) => p.key !== "2026-W45");
+	assert.deepEqual(keys(plan(() => true, () => undefined), "daily").at(-1), "2026-11-12", "today without data is left out");
+	assert.deepEqual(keys(plan(() => true, () => undefined), "weekly").at(-1), "2026-W46<2026-11-12T23:00:00.000Z", "the week stops at the last day with data");
+
+	const pending = plan(({ key }) => key !== "2026-11-12", (day) => day.end - HOUR_MS);
+	assert.ok(keys(pending, "daily").includes("2026-11-12<2026-11-12T22:00:00.000Z"), "an ended day not ready yet is provisional");
+	assert.deepEqual(keys(pending, "weekly").at(-1), "2026-W46<2026-11-13T22:00:00.000Z", "the week follows its newest day's data");
+	const weekPending = plan(({ key }) => key !== "2026-W45");
 	assert.deepEqual(keys(weekPending, "weekly").slice(1, 2), ["2026-W45<2026-11-08T23:00:00.000Z"], "an ended week waiting for a device stays running");
+});
+
+test("dataUntil is the end of the hour of the newest row or snapshot in the day", () => {
+	const day = periodOf("daily", Date.parse("2026-11-12T12:00:00Z"), TZ);
+	assert.equal(dataUntil(day, [], []), undefined);
+	assert.equal(dataUntil(day, [{ hour: day.start - HOUR_MS }], []), undefined, "data before the day does not count");
+	assert.equal(dataUntil(day, [{ hour: day.start + 2 * HOUR_MS }], [{ recordedAt: day.start + 5 * HOUR_MS + 59_000 }]), day.start + 6 * HOUR_MS);
+	assert.equal(dataUntil(day, [{ hour: day.end - HOUR_MS }], []), day.end, "capped at the day's end");
 });
 
 test("the input hash ignores order and data outside the period and the one before", () => {

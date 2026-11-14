@@ -525,7 +525,7 @@ export const storedHash = (html) => /<meta name="usage-input" content="([0-9a-f]
 export function renderReport(d, hash) {
 	const kind = KIND_NAMES[d.period.kind];
 	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: d.tz, weekday: "short", day: "numeric", month: "short" }).format(ms);
-	const live = d.period.cutoff ? `<span class="live"><i class="live-dot"></i>Running · data up to and including ${esc(day(d.period.cutoff - 1))} · updated daily</span>` : "";
+	const live = d.period.cutoff ? `<span class="live"><i class="live-dot"></i>Running · data up to and including ${esc(day(d.period.cutoff - 1))} · updated as devices sync</span>` : "";
 	const hero = `<header class="hero"><div class="eyebrow">Agent usage · ${kind} report${d.period.cutoff ? " · so far" : ""}</div><h1>${esc(d.label)}</h1>
 <nav><a href="../index.html">All reports</a>${d.previous ? `<a href="../${reportPath(d.previous)}">← ${esc(d.previous.key)}</a>` : ""}${d.next ? `<a href="../${reportPath(d.next)}">${esc(d.next.key)} →</a>` : ""}${live}<span>${esc(d.tz)}</span></nav></header>`;
 	if (!d.totals.requests && !d.accounts.some((a) => a.limits.length))
@@ -562,14 +562,14 @@ export function renderIndex(reports, running = new Set(), guardian = false) {
 		})
 		.join("");
 	const allTime = reports.alltime?.length
-		? `<a class="card alltime" href="alltime/${esc(reports.alltime[0])}.html"><div><b>All time</b><br><span>Everything since the first recorded request, summed and updated daily.</span></div><em>Open →</em></a>`
+		? `<a class="card alltime" href="alltime/${esc(reports.alltime[0])}.html"><div><b>All time</b><br><span>Everything since the first recorded request, summed and updated as devices sync.</span></div><em>Open →</em></a>`
 		: "";
 	const guardianLink = guardian
 		? `<a class="card alltime" href="guardian/index.html"><div><b>Guardian</b><br><span>Improvement log with measured effects, and the open findings ranked by cost × recurrence.</span></div><em>Open →</em></a>`
 		: "";
 	return shell(
 		"Agent usage reports",
-		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly, monthly, yearly and all time. Running reports update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header>${allTime}${guardianLink}<div class="index">${columns}</div>`,
+		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly, monthly, yearly and all time. Running reports update as devices sync; a report is rebuilt when a device adds data to its period.</span></nav></header>${allTime}${guardianLink}<div class="index">${columns}</div>`,
 	);
 }
 

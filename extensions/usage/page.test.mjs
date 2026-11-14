@@ -51,7 +51,7 @@ test("the index links every report kind and says when one has none yet", () => {
 
 test("a running report says how far its data goes, compares by the same point, and the index marks it", () => {
 	const html = renderReport(digest({ period: { ...period, cutoff: period.start + 2 * 24 * HOUR_MS }, rows: [row("t", "p")], limits: [], labels: {}, tz: TZ, now: period.end, generator: "mac" }));
-	assert.match(html, /Running · data up to and including Tue 3 Nov · updated daily/);
+	assert.match(html, /Running · data up to and including Tue 3 Nov · updated as devices sync/);
 	assert.match(html, /by this point the week before/);
 	const index = renderIndex({ weekly: ["2026-W45", "2026-W44"] }, new Set(["weekly/2026-W45.html"]));
 	assert.match(index, /2026-W45<em class="badge">running<\/em>/);

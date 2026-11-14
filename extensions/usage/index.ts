@@ -17,7 +17,8 @@
  * After the pull it writes `reports/{daily,weekly,monthly,yearly}/<period>.html`,
  * `reports/alltime/all.html` and `reports/index.html` for every period since the oldest data whose
  * report is missing or was built from other data (a new device, a backfill); the running week,
- * month, year and the all-time report update once a day. The first device to push a report wins.
+ * month, year and the all-time report, today and any ended day a device has not synced after
+ * are provisional ("so far") and update with newer data. The first device to push a report wins.
  *
  * Privacy: rows carry session titles and project folder names, passed through the secret
  * redactor, and account labels name the account e-mail. Work session titles therefore leave

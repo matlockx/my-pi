@@ -100,34 +100,66 @@ export const previousPeriod = (period, tz) => (period.kind === ALL_TIME ? undefi
 /** The period after; undefined for the all-time report, which has none. */
 export const nextPeriod = (period, tz) => (period.kind === ALL_TIME ? undefined : periodOf(period.kind, period.end, tz));
 
-// End of the last ready day of the run of days starting at start, at most until; start when none is ready.
-function lastReadyDay(start, until, tz, ready) {
+/**
+ * Where a day's data ends for the periods holding it: its end when the day is final (ended and
+ * ready), else the provisional cutoff `until(day)`, undefined for a day without data.
+ */
+function dayCutoff(d, now, ready, until) {
+	if (d.end <= now && ready(d)) return d.end;
+	return until(d);
+}
+
+// End of the data of the days from start up to `limit`: the last day's cutoff that exists; start when no day has any.
+function coveredEnd(start, limit, tz, ready, until, now) {
 	let cutoff = start;
-	for (let d = periodOf("daily", start, tz); d.end <= until && ready(d); d = periodOf("daily", d.end, tz)) cutoff = d.end;
+	for (let d = periodOf("daily", start, tz); d.start < limit; d = periodOf("daily", d.end, tz)) {
+		const end = dayCutoff(d, now, ready, until);
+		if (end !== undefined && end > cutoff) cutoff = end;
+	}
 	return cutoff;
 }
 
 /**
- * The periods to report, per kind from the one containing `from` to the one containing now, oldest
- * first, then the all-time report. A period that ended and is `ready` is final. A week, month or
- * year that is still running, or ended but is not ready yet, gets `cutoff`: the end of its last
- * ready day (days in order from its start); it is left out while no day of it is ready. Days are
- * reported only when final. The all-time report runs from the day holding `from` to its cutoff
- * (`end` equals `cutoff`) and is always running.
+ * The end of the data a day holds so far: the end of the hour of its newest row or limit snapshot
+ * (rows are hourly, so it is stable until newer data arrives), at most the day's end; undefined
+ * when the day has no data. Rows and snapshots of every device count.
  */
-export function reportPeriods(from, now, tz, ready) {
+export function dataUntil(day, rows, limits) {
+	let newest = Number.NEGATIVE_INFINITY;
+	for (const r of rows) if (r.hour >= day.start && r.hour < day.end) newest = Math.max(newest, r.hour);
+	for (const s of limits) if (s.recordedAt >= day.start && s.recordedAt < day.end) newest = Math.max(newest, Math.floor(s.recordedAt / HOUR_MS) * HOUR_MS);
+	return Number.isFinite(newest) ? Math.min(day.end, newest + HOUR_MS) : undefined;
+}
+
+/**
+ * The periods to report, per kind from the one containing `from` to the one containing now, oldest
+ * first, then the all-time report. A period that ended and is `ready` is final. Anything else is
+ * provisional and gets `cutoff`, so it renders as "so far".
+ *
+ * A day that is today, or ended but is not ready yet, has the cutoff `until(day)`: the end of
+ * the hour of its newest data (digest.mjs `dataUntil`), so the hash only changes with new data, not
+ * with the clock. A provisional day without data is left out. A week, month or year that is not
+ * final, and the all-time report, end at the last cutoff of their days (a final day counts to
+ * its end); it is left out while no day has data. The all-time report runs from the day holding
+ * `from` to its cutoff (`end` equals `cutoff`) and is always running.
+ *
+ * @param {(day: object) => number | undefined} until Cutoff of a provisional day, or undefined without data.
+ */
+export function reportPeriods(from, now, tz, ready, until) {
+	// DEV-NOTE: a provisional day is rebuilt as final once it is ready: its cutoff drops out of the input hash.
 	const out = [];
 	for (const kind of KINDS) {
 		for (let p = periodOf(kind, from, tz); p.start < now; p = periodOf(kind, p.end, tz)) {
-			if (p.end <= now && ready(p)) out.push(p);
-			else if (kind !== "daily") {
-				const cutoff = lastReadyDay(p.start, Math.min(now, p.end), tz, ready);
-				if (cutoff > p.start) out.push({ ...p, cutoff });
+			if (p.end <= now && ready(p)) {
+				out.push(p);
+				continue;
 			}
+			const cutoff = kind === "daily" ? until(p) : coveredEnd(p.start, Math.min(now, p.end), tz, ready, until, now);
+			if (cutoff > p.start) out.push({ ...p, cutoff });
 		}
 	}
 	const start = periodOf("daily", from, tz).start;
-	const cutoff = lastReadyDay(start, now, tz, ready);
+	const cutoff = coveredEnd(start, now, tz, ready, until, now);
 	if (cutoff > start) out.push({ kind: ALL_TIME, key: "all", start, end: cutoff, cutoff });
 	return out;
 }
