@@ -26,7 +26,8 @@
  *
  * Commands: `/orchestrate on|off|status`, `/orchestrate budget on|off` (cost warning and Builder
  * pause; loop breakers stay on), `/orchestrate rate <1-5> [note]` (rates the last run record). The
- * switch state is saved with the session and shown in the footer.
+ * switch state is saved with the session and shown in the footer; `on` and `off` also set the global
+ * default (~/.omp/agent/orchestrator.json) that new sessions start with, resumed sessions keep their own.
  *
  * Spec: notes/specs/2026-11-14-orchestrator-mode.md.
  */
@@ -90,6 +91,7 @@ import {
 	currentPipelineVersion,
 	FOOTER_EVENT,
 	handlesOf,
+	hasSavedState,
 	LIVE_PREVIEW,
 	loadState,
 	modeConflict,
@@ -98,11 +100,13 @@ import {
 	parseCommand,
 	PR_ROUND_CAP,
 	prRoundKey,
+	readGlobalDefault,
 	sessionModeState,
 	SETTING_IDS,
 	settingsPlan,
 	STATE_ENTRY,
 	statusText,
+	writeGlobalDefault,
 } from "./state.mjs";
 
 const LEAD = readFileSync(fileURLToPath(new URL("./lead.md", import.meta.url)), "utf8").trim();
@@ -206,12 +210,16 @@ export default function (pi: ExtensionAPI) {
 			run && runSummary(run, { pipelineVersion: currentPipelineVersion(), qaVerdicts: qaReports().map((r) => String(r.verdict ?? "")) });
 		handles ??= await loadHandles(SETTING_IDS);
 		preview ??= (await loadHandles([LIVE_PREVIEW]))?.get(LIVE_PREVIEW);
-		state = loadState(ctx.sessionManager.getBranch());
+		const branch = ctx.sessionManager.getBranch();
+		state = loadState(branch, readGlobalDefault());
 		const conflict = state.enabled ? modeConflict(sessionModeState(ctx)) : undefined;
 		if (conflict) {
 			state = { ...state, enabled: false };
 			ctx.ui.notify(`Orchestrator mode stays off: ${conflict}`, "warning");
 		}
+		// DEV-NOTE: a new session persists the inherited global default (after the mode conflict),
+		// so a resume keeps this session's own setting instead of re-reading a changed global file.
+		if (!hasSavedState(branch)) save();
 		applySettings();
 		applyTools();
 		show(ctx);
@@ -310,9 +318,12 @@ export default function (pi: ExtensionAPI) {
 			const patch = await withDeadline(diffSince(sub.top, baseline), ROUND_PATCH_DEADLINE_MS, `round patch took over ${ROUND_PATCH_DEADLINE_MS / 1000} s`);
 			const written = writeRoundPatch(sub.dir, agent.id, patch);
 			orch.rounds.set(agent.id, [...rounds, { ...written, result: data }]);
+			// DEV-NOTE: the Builder yielded, so the round owed since the Lead's message is now recorded.
+			orch.owed.delete(agent.id);
 		} catch (err) {
 			// DEV-NOTE: never block the yield; a missing round shows up as "no patch" at apply_change.
 			orch.rounds.set(agent.id, [...rounds, { round: rounds.length + 1, path: "", hash: "", result: data, error: String(err) }]);
+			orch.owed.delete(agent.id);
 		}
 	};
 
@@ -329,7 +340,8 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!state.enabled || !run) return undefined;
 		if (event.toolName === "task") {
-			const revised = reviseTaskInput(event.input, latestRound()?.path || undefined);
+			const owed = (run.implementers ?? []).filter((id) => orch.owed.has(id)).map((id) => ({ id, round: orch.rounds.get(id)?.length ?? 0 }));
+			const revised = reviseTaskInput(event.input, latestRound()?.path || undefined, owed);
 			if ("block" in revised) return { block: true, reason: revised.reason };
 			if (revised.input !== event.input) return { input: revised.input } as unknown as ToolCallEventResult;
 			return undefined;
@@ -353,6 +365,8 @@ export default function (pi: ExtensionAPI) {
 			if (brk.level === "budget") orch.budgets.set(builder, next);
 		}
 		run = recordMessage(run, String(event.input.path ?? ""));
+		// DEV-NOTE: marked only after followUpBreak let the message through; a blocked message owes nothing.
+		orch.owed.add(builder);
 		return undefined;
 	});
 
@@ -549,6 +563,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			state = { ...state, enabled: cmd.action === "on" };
 			save();
+			try {
+				writeGlobalDefault(state.enabled);
+			} catch (err) {
+				ctx.ui.notify(`Could not save the global default for new sessions: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			}
 			applySettings();
 			applyTools();
 			if (!state.enabled && run) {

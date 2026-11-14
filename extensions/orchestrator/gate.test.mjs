@@ -168,6 +168,16 @@ test("reviseTaskInput isolates implementer and qa items and hands QA the latest 
 	assert.equal(reviseTaskInput(plain, undefined).input, plain);
 });
 
+test("reviseTaskInput blocks QA while a Builder owes a round and lets it through after the yield", () => {
+	const qa = { agent: "qa", task: "review" };
+	const owed = [{ id: "B1", round: 2 }];
+	const blocked = reviseTaskInput(qa, "/a/B1.round-2.patch", owed);
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason, /Builder B1 has not yielded since your last message, so its newest patch \(round 2\) predates your request\. Ask it to call yield/);
+	assert.equal(reviseTaskInput({ agent: "implementer", task: "do" }, undefined, owed).input.isolated, true, "only QA is held back");
+	assert.match(reviseTaskInput(qa, "/a/B1.round-3.patch", []).input.task, /round-3\.patch/);
+});
+
 test("followUpBreak: replan request, pause, round cap and no progress each open the dialog", () => {
 	const run = recordSpawn(newRun("r", "build"), "implementer", "B1");
 	assert.equal(followUpBreak(run, {}), undefined);

@@ -187,17 +187,29 @@ const ISOLATED_AGENTS = new Set(["implementer", "qa"]);
 
 const taskItems = (input) => (Array.isArray(input?.tasks) ? input.tasks : [input]);
 
+// Why QA may not start now (an owed Builder yield, or no patch yet), or undefined.
+function qaRefusal(latestPatch, owed) {
+	if (owed.length > 0) {
+		const { id, round } = owed[0];
+		return `Builder ${id} has not yielded since your last message, so its newest patch (round ${round}) predates your request. Ask it to call yield with its structured result, then start QA.`;
+	}
+	if (!latestPatch) return "No Builder round patch to review yet: wait for the implementer's result first.";
+	return undefined;
+}
+
 /**
  * The `task` call input with `isolated: true` on every implementer and qa item, and the patch to
  * review appended to qa items. `latestPatch` is the newest Builder round patch path of the run.
- * Returns `{ input }` (unchanged when no item needs it) or `{ block, reason }` for QA without a patch.
+ * `owed` lists `{ id, round }` for each run Builder the Lead messaged since its last yield
+ * (`round`: its newest recorded round, 0 for none). Returns `{ input }` (unchanged when no item
+ * needs it) or `{ block, reason }` for QA without a patch or on a patch that predates a message.
  */
-export function reviseTaskInput(input, latestPatch) {
+export function reviseTaskInput(input, latestPatch, owed = []) {
 	const items = taskItems(input);
 	if (!items.some((t) => ISOLATED_AGENTS.has(t?.agent))) return { input };
-	if (!latestPatch && items.some((t) => t?.agent === "qa")) {
-		return { block: true, reason: "No Builder round patch to review yet: wait for the implementer's result first." };
-	}
+	const hasQa = items.some((t) => t?.agent === "qa");
+	const reason = hasQa ? qaRefusal(latestPatch, owed) : undefined;
+	if (reason) return { block: true, reason };
 	const revise = (t) => (ISOLATED_AGENTS.has(t?.agent) ? isolatedItem(t, latestPatch) : t);
 	return { input: Array.isArray(input.tasks) ? { ...input, tasks: input.tasks.map(revise) } : revise(input) };
 }

@@ -70,6 +70,7 @@ test("a session touched since the cutoff is read whole, its untouched subagent l
 	const sub = join(dir, "-shop", `2026-11-13T10-00-00-000Z_${id}`, "Scout.jsonl");
 	writeFileSync(main, lines(header(), user(1, "go"), reply(2, 1)));
 	writeFileSync(sub, lines(header(3), reply(4, 2)));
+	utimesSync(main, new Date(T0), new Date(T0));
 	const old = new Date(T0 - 10 * 24 * HOUR_MS);
 	utimesSync(sub, old, old);
 	const scan = await scanSessions(dir, T0 - HOUR_MS);

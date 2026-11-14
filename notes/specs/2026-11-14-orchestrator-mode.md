@@ -6,7 +6,9 @@ work_state: ready
 
 ## Goal
 
-A per-session switch `/orchestrate on|off|status`. While it is on, the main session acts as the **Lead**
+A switch `/orchestrate on|off|status`, saved per session; `on` and `off` also write the global default
+(`~/.omp/agent/orchestrator.json`, `{ "enabled": true|false }`) that a new session without a saved state
+starts with (a resumed session keeps its own last setting; the budget switch stays per session). While it is on, the main session acts as the **Lead**
 (orchestrator) and never edits files itself. For every user prompt the Lead first decides the route:
 answer directly, build directly, plan first, or (when unsure) ask the user whether to plan. Planning runs
 in an **Architect** subagent, implementation in a **Builder** subagent working in an isolated workspace,

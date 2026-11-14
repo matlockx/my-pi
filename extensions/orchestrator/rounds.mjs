@@ -57,12 +57,20 @@ export function withDeadline(promise, ms, message) {
  * Process-wide record of Builder rounds and QA reports, written in the subagent sessions and read
  * by the Lead's session (module state is per session; globalThis is shared, spec phase 0).
  * `rounds`: Builder id -> [{ round, path, hash, result, error? }]; `qa`: QA id -> report;
+ * `owed`: ids of Builders the Lead messaged since their last yield (a round is owed);
  * `budgets`: Builder id -> budget in USD; `budget`: the switch ("on" | "off"). Budgets live here
  * because the pause is enforced in the Builder's session, not in the Lead's.
  */
 export function orchestratorRegistry(scope = globalThis) {
-	scope[KEY] ??= { rounds: new Map(), qa: new Map(), budgets: new Map(), budget: "on" };
-	return scope[KEY];
+	// DEV-NOTE: the registry outlives code reloads in a running omp process, so one created by an older
+	// version lacks newer fields (`owed` once crashed recordYield); fill each missing field, keep the rest.
+	const reg = (scope[KEY] ??= {});
+	reg.rounds ??= new Map();
+	reg.qa ??= new Map();
+	reg.owed ??= new Set();
+	reg.budgets ??= new Map();
+	reg.budget ??= "on";
+	return reg;
 }
 
 export const QA_LINE_LIMIT = 40;

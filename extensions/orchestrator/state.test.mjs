@@ -1,10 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { accuracyNote, footerOn, footerText, handlesOf, ISOLATION, loadState, modeConflict, onNotice, ORCHESTRATOR_AGENTS, parseCommand, pipelineVersion, prRoundKey, quickReviewStandsDown, sessionModeState, settingsPlan, statusText } from "./state.mjs";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { accuracyNote, footerOn, footerText, handlesOf, hasSavedState, ISOLATION, loadState, modeConflict, onNotice, ORCHESTRATOR_AGENTS, parseCommand, pipelineVersion, prRoundKey, quickReviewStandsDown, readGlobalDefault, sessionModeState, settingsPlan, statusText, writeGlobalDefault } from "./state.mjs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test("hasSavedState tells a new branch from one with a saved entry", () => {
+	assert.equal(hasSavedState([]), false);
+	assert.equal(hasSavedState(undefined), false);
+	assert.equal(hasSavedState([{ type: "custom", customType: "orchestrator", data: "x" }]), false);
+	assert.equal(hasSavedState([{ type: "custom", customType: "orchestrator", data: { enabled: false } }]), true);
+});
+
+test("loadState starts a branch without a saved entry on the global default; a saved entry wins", () => {
+	assert.deepEqual(loadState([], true), { enabled: true, budget: "on" });
+	assert.deepEqual(loadState(undefined, true), { enabled: true, budget: "on" });
+	assert.deepEqual(loadState([], "yes"), { enabled: false, budget: "on" });
+	const saved = [{ type: "custom", customType: "orchestrator", data: { enabled: false, budget: "off" } }];
+	assert.deepEqual(loadState(saved, true), { enabled: false, budget: "off" });
+});
+
+test("readGlobalDefault is off for a missing or corrupt file; write then read round-trips", () => {
+	const dir = mkdtempSync(join(tmpdir(), "orch-gd-"));
+	const path = join(dir, "nested", "orchestrator.json");
+	assert.equal(readGlobalDefault(path), false);
+	writeGlobalDefault(true, path);
+	assert.equal(readGlobalDefault(path), true);
+	writeGlobalDefault(false, path);
+	assert.equal(readGlobalDefault(path), false);
+	assert.deepEqual(readdirSync(join(dir, "nested")), ["orchestrator.json"]);
+	writeFileSync(path, "{not json");
+	assert.equal(readGlobalDefault(path), false);
+	writeFileSync(path, JSON.stringify({ enabled: "true" }));
+	assert.equal(readGlobalDefault(path), false);
+});
 
 test("parseCommand reads on, off, status, budget and rate; everything else is an error", () => {
 	assert.deepEqual(parseCommand(""), { action: "status" });

@@ -6,7 +6,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { applyDialog, applyPatch } from "./apply.mjs";
-import { diffSince, orphanWorkspaces, patchStats, progressBreak, qaTriggers, roundPatches, snapshotTree, withDeadline, writeRoundPatch } from "./rounds.mjs";
+import { diffSince, orchestratorRegistry, orphanWorkspaces, patchStats, progressBreak, qaTriggers, roundPatches, snapshotTree, withDeadline, writeRoundPatch } from "./rounds.mjs";
+
+test("orchestratorRegistry fills fields an older registry lacks and keeps existing ones", () => {
+	const rounds = new Map([["b1", [{ round: 1 }]]]);
+	const scope = { [Symbol.for("my-pi.orchestrator.registry")]: { rounds, budget: "off" } };
+	const reg = orchestratorRegistry(scope);
+	assert.equal(reg.rounds, rounds);
+	assert.equal(reg.budget, "off");
+	assert.deepEqual([...reg.owed], []);
+	for (const f of ["qa", "budgets"]) assert.ok(reg[f] instanceof Map);
+	assert.equal(orchestratorRegistry(scope), reg);
+});
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 

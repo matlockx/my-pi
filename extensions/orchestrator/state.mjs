@@ -5,7 +5,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { COST_THRESHOLD_USD, MAX_BUILDER_ROUNDS, PAUSE_FACTOR, QUICK_BUDGET_USD } from "./gate.mjs";
@@ -62,10 +64,38 @@ export function parseCommand(args) {
 	return command ? command(rest) : { error: USAGE };
 }
 
-/** Latest saved switch state on a session branch; off with budget on when none is saved. */
-export function loadState(entries) {
-	const saved = (entries ?? []).findLast((e) => e?.type === "custom" && e.customType === STATE_ENTRY && e.data && typeof e.data === "object");
-	if (!saved) return { ...DEFAULT_STATE };
+/** Global switch default shared by all sessions (only `enabled`; the budget stays per session). */
+export const GLOBAL_DEFAULT_PATH = join(homedir(), ".omp", "agent", "orchestrator.json");
+
+/** Global default of the switch from `path`; off when the file is missing, unreadable or malformed. */
+export function readGlobalDefault(path = GLOBAL_DEFAULT_PATH) {
+	try {
+		return JSON.parse(readFileSync(path, "utf8"))?.enabled === true;
+	} catch {
+		return false;
+	}
+}
+
+/** Writes the global default to `path` atomically (temp file, then rename), creating its directory. Throws on I/O failure. */
+export function writeGlobalDefault(enabled, path = GLOBAL_DEFAULT_PATH) {
+	mkdirSync(dirname(path), { recursive: true });
+	const tmp = `${path}.${process.pid}.tmp`;
+	writeFileSync(tmp, `${JSON.stringify({ enabled: enabled === true })}\n`);
+	renameSync(tmp, path);
+}
+
+const savedEntry = (entries) => (entries ?? []).findLast((e) => e?.type === "custom" && e.customType === STATE_ENTRY && e.data && typeof e.data === "object");
+
+/** Whether a session branch carries a saved switch state (false for a new session). */
+export const hasSavedState = (entries) => savedEntry(entries) !== undefined;
+
+/**
+ * Latest saved switch state on a session branch. A branch with no saved state (a new session)
+ * starts with `globalDefault` (boolean, off when omitted) and budget on.
+ */
+export function loadState(entries, globalDefault = false) {
+	const saved = savedEntry(entries);
+	if (!saved) return { ...DEFAULT_STATE, enabled: globalDefault === true };
 	return { enabled: saved.data.enabled === true, budget: saved.data.budget === "off" ? "off" : "on" };
 }
 
