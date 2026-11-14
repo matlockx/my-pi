@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HOUR_MS } from "./parse.mjs";
-import { buildReport, limitDelta, parseWindow } from "./report.mjs";
+import { buildReport, ledgerViewReport, limitDelta, parseWindow } from "./report.mjs";
 
 const NOW = Date.parse("2026-11-13T12:30:00.000Z");
 const H = (n) => NOW - n * HOUR_MS;
@@ -101,4 +101,14 @@ test("unknown group keys are rejected with the allowed list", () => {
 		() => buildReport({ rows: [], snapshots: [], labels: {}, now: NOW, window: "5h", groupBy: ["colour"] }),
 		/groupBy: unknown colour; use account/,
 	);
+});
+
+test("ledgerViewReport: 7d by default, 5h means the last 5 hours, other windows pass through", () => {
+	const run = (runId, startedAt) => ({ runId, startedAt, costUsd: 1, requests: 1, workItems: [] });
+	const ledger = { runs: [run("recent", NOW - HOUR_MS), run("days", NOW - 3 * 24 * HOUR_MS), run("old", NOW - 10 * 24 * HOUR_MS)], findings: [], improvements: [] };
+	const prompts = (window) => /\| no work item \| (\d+) \|/.exec(ledgerViewReport({ ledger, view: "runs", window, now: NOW }))?.[1];
+	assert.equal(prompts(undefined), "2");
+	assert.equal(prompts("5h"), "1");
+	assert.equal(prompts("last:30d"), "3");
+	assert.match(ledgerViewReport({ ledger, view: "runs", groupBy: ["mode"], now: NOW }), /\| off \| 2 \|/);
 });

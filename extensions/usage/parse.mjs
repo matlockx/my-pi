@@ -8,6 +8,8 @@ import { createReadStream, readdirSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import readline from "node:readline";
 
+import { addLedgerEntry, mergeLedger } from "./ledger.mjs";
+
 export const HOUR_MS = 3_600_000;
 
 /** User-message prefixes of prompts sent by extensions, and the feature each names. */
@@ -29,6 +31,7 @@ const MARKERS = [
 	'"model_change"',
 	'"type":"session"',
 	'"type":"title"',
+	'"customType":"guardian-',
 ];
 export const COUNTERS = ["requests", "input", "output", "cacheRead", "cacheWrite", "cost", "premium"];
 const ROOT = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/;
@@ -81,9 +84,9 @@ function splitModel(ref) {
  * writes the pin after the first reply.
  *
  * @param {Iterable<any>} entries Parsed log lines in file order.
- * @returns {{header: any, title: string, runs: Array<[number, string]>, events: any[]}} `runs` lists
- *   each run's start time and feature; `events` one per request with `ts`, `feature`, `provider`,
- *   `model`, `account` and the counters.
+ * @returns {{header: any, title: string, runs: Array<[number, string]>, events: any[], ledger: {runs: any[], findings: any[], improvements: any[]}}}
+ *   `runs` lists each run's start time and feature; `events` one per request with `ts`, `feature`,
+ *   `provider`, `model`, `account` and the counters; `ledger` the guardian entries (ledger.mjs).
  */
 export function parseEntries(entries) {
 	let header = {};
@@ -96,6 +99,7 @@ export function parseEntries(entries) {
 	const runs = [];
 	const pins = new Map();
 	const events = [];
+	const ledger = { runs: [], findings: [], improvements: [] };
 
 	const add = (entry, source, featureName, ts) => {
 		const usage = source.usage;
@@ -140,6 +144,9 @@ export function parseEntries(entries) {
 			case "custom_message":
 				if (idle) pending.other = entry.customType;
 				continue;
+			case "custom":
+				addLedgerEntry(ledger, entry.customType, entry.data, ts);
+				continue;
 		}
 		if (ts < start) continue;
 		if (entry.type !== "message") {
@@ -164,7 +171,7 @@ export function parseEntries(entries) {
 			add(entry, message, feature, ts);
 		}
 	}
-	return { header, title, runs, events };
+	return { header, title, runs, events, ledger };
 }
 
 /** Parses one log file, skipping lines that carry nothing `parseEntries` reads. */
@@ -200,6 +207,14 @@ function featureAt(runs, ts) {
 	return feature ?? "user";
 }
 
+// Project folder of a log: its root session's working directory, else the sessions folder name.
+function projectOf(log, roots) {
+	const cwd = roots.get(log.sessionId)?.parsed.header.cwd ?? log.parsed.header.cwd;
+	return cwd ? basename(cwd) : log.folder;
+}
+
+const rootsOf = (logs) => new Map(logs.filter((l) => l.agent === "main").map((l) => [l.sessionId, l]));
+
 /**
  * Hourly rows from parsed logs.
  *
@@ -210,12 +225,11 @@ function featureAt(runs, ts) {
  * @returns {any[]} Rows keyed by hour, sessionId, agent, feature, provider, model and account.
  */
 export function hourlyRows(logs) {
-	const roots = new Map(logs.filter((l) => l.agent === "main").map((l) => [l.sessionId, l]));
+	const roots = rootsOf(logs);
 	const rows = new Map();
 	for (const log of logs) {
 		const root = roots.get(log.sessionId);
-		const cwd = root?.parsed.header.cwd ?? log.parsed.header.cwd;
-		const project = cwd ? basename(cwd) : log.folder;
+		const project = projectOf(log, roots);
 		const title = root?.parsed.title || log.parsed.title;
 		const subagentStart = Date.parse(log.parsed.header.timestamp ?? "") || 0;
 		for (const e of log.parsed.events) {
@@ -297,5 +311,11 @@ export async function scanSessions(sessionsDir, sinceMs = 0) {
 		}
 	}
 	const complete = logs.filter((l) => !broken.has(l.sessionId));
-	return { rows: hourlyRows(complete), files: complete.length, skipped: files.filter((f) => broken.has(f.sessionId)).length };
+	const roots = rootsOf(complete);
+	return {
+		rows: hourlyRows(complete),
+		ledger: mergeLedger(complete, (log) => projectOf(log, roots)),
+		files: complete.length,
+		skipped: files.filter((f) => broken.has(f.sessionId)).length,
+	};
 }

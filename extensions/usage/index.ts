@@ -33,9 +33,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { accountsAndLimits, loadConfig, localDevice, resolveUnpinned } from "./collect.mjs";
+import { LEDGER_VIEWS, RUN_GROUP_KEYS } from "./ledger.mjs";
 import { rowKey, scanSessions } from "./parse.mjs";
-import { GROUP_KEYS, buildReport } from "./report.mjs";
-import { limitKey, mergeByKey, readRepo } from "./store.mjs";
+import { GROUP_KEYS, buildReport, ledgerViewReport } from "./report.mjs";
+import { limitKey, mergeByKey, mergeLedgers, readRepo } from "./store.mjs";
 
 const DAY_MS = 24 * 3_600_000;
 // Medians of closed limit windows look back 30 days; one more covers the 7-day window start.
@@ -72,7 +73,7 @@ async function gather(exec: Exec, now: number) {
 	);
 	const liveRows = resolveUnpinned(scan.rows, live.byProvider);
 	const config = repoConfig();
-	if (!config) return { rows: liveRows, snapshots: live.snapshots, labels: live.labels, devices: "this device only (no ~/.pi/usage/config.json)" };
+	if (!config) return { rows: liveRows, snapshots: live.snapshots, labels: live.labels, ledger: scan.ledger, devices: "this device only (no ~/.pi/usage/config.json)" };
 	const stored = readRepo(config.repo, { since });
 	const own = stored.rows.filter((r) => r.device === config.device);
 	const others = stored.rows.filter((r) => r.device !== config.device);
@@ -81,10 +82,12 @@ async function gather(exec: Exec, now: number) {
 	const kept = own.filter((r) => !liveSessions.has(r.sessionId));
 	const rows = [...others, ...mergeByKey(kept, liveRows.map((r: object) => ({ ...r, device: config.device })), rowKey)];
 	const devices = [...new Set(rows.map((r) => r.device))].join(", ");
+	const ledger = mergeLedgers(stored, scan.ledger);
 	return {
 		rows,
 		snapshots: mergeByKey(stored.limits, live.snapshots, limitKey),
 		labels: { ...live.labels, ...stored.labels },
+		ledger,
 		devices,
 	};
 }
@@ -94,7 +97,8 @@ export default function usage(pi: ExtensionAPI): void {
 		name: "usage_report",
 		label: "Usage Report",
 		description:
-			"Token and subscription-limit usage per account (Anthropic 5-hour/weekly, Copilot premium), grouped by session, feature, model, provider, project, agent, device or hour, across all synced devices.",
+			"Token and subscription-limit usage per account (Anthropic 5-hour/weekly, Copilot premium), grouped by session, feature, model, provider, project, agent, device or hour, across all synced devices. " +
+			"view runs|findings|improvements reads the Guardian ledger: cost and quality per prompt and orchestrated run, open Guardian findings, and improvement decisions with their measured effect.",
 		promptSnippet: "usage_report: Explain token and limit usage per account, provider, model, session and feature.",
 		promptGuidelines: [
 			"Use usage_report when the user asks how much of a usage limit was spent, why usage was high, or which session, feature, model or provider used it. Default window 5h is each account's current 5-hour limit window; group by session and feature first, then drill down.",
@@ -106,8 +110,11 @@ export default function usage(pi: ExtensionAPI): void {
 				}),
 			),
 			groupBy: Type.Optional(
-				Type.Array(Type.String(), { description: `Group keys, any of: ${GROUP_KEYS.join(", ")}. Default [session].` }),
+				Type.Array(Type.String(), {
+					description: `Group keys. view hourly: ${GROUP_KEYS.join(", ")} (default [session]). view runs: ${RUN_GROUP_KEYS.join(", ")} (default [workItem]).`,
+				}),
 			),
+			view: Type.Optional(Type.String({ description: `hourly (default) or one of ${LEDGER_VIEWS.join(", ")}.` })),
 			provider: Type.Optional(Type.String({ description: "Only accounts of this provider, e.g. anthropic, github-copilot." })),
 			account: Type.Optional(Type.String({ description: "Only accounts whose label contains this text or whose hash starts with it." })),
 			top: Type.Optional(Type.Number({ description: "Groups shown per account before the rest is summed (default 10)." })),
@@ -115,17 +122,21 @@ export default function usage(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params) {
 			const now = Date.now();
 			const data = await gather(pi.exec.bind(pi), now);
-			const text = buildReport({
-				rows: data.rows,
-				snapshots: data.snapshots,
-				labels: data.labels,
-				now,
-				window: params.window ?? "5h",
-				groupBy: params.groupBy ?? ["session"],
-				...(params.provider ? { provider: params.provider } : {}),
-				...(params.account ? { account: params.account } : {}),
-				...(params.top ? { top: params.top } : {}),
-			});
+			const view = params.view ?? "hourly";
+			const text =
+				view === "hourly"
+					? buildReport({
+							rows: data.rows,
+							snapshots: data.snapshots,
+							labels: data.labels,
+							now,
+							window: params.window ?? "5h",
+							groupBy: params.groupBy ?? ["session"],
+							...(params.provider ? { provider: params.provider } : {}),
+							...(params.account ? { account: params.account } : {}),
+							...(params.top ? { top: params.top } : {}),
+						})
+					: ledgerViewReport({ ledger: data.ledger, view, window: params.window, groupBy: params.groupBy, top: params.top, now });
 			return {
 				content: [{ type: "text" as const, text: `Devices: ${data.devices}\n\n${text}` }],
 				details: undefined,

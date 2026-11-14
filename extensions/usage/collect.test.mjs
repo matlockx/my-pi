@@ -68,7 +68,7 @@ function clone(remote, dir) {
 	git(dir, "config", "commit.gpgsign", "false");
 }
 
-function sessions(cost) {
+function sessions(cost, extra = []) {
 	const dir = mkdtempSync(join(tmpdir(), "usage-sessions-"));
 	const id = "01a1a136-b5fd-77f9-8e1d-040fb9157988";
 	mkdirSync(join(dir, "-shop"));
@@ -78,6 +78,7 @@ function sessions(cost) {
 		{ type: "message", timestamp: at(1), message: { role: "user", content: "go" } },
 		{ type: "message", timestamp: at(2), message: { role: "assistant", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cost: { total: cost } }, stopReason: "stop" } },
 		{ type: "credential_pin", timestamp: at(2), provider: "anthropic", hash: A },
+		...extra.map((e) => ({ timestamp: at(3), ...e })),
 	];
 	writeFileSync(join(dir, "-shop", `2026-11-13T11-00-00-000Z_${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n"));
 	return dir;
@@ -207,4 +208,25 @@ test("a report links forward once the next period has a report, and is rebuilt t
 	const nextDay = writeReports({ repo, now: Date.parse("2026-11-17T12:00:00.000Z"), tz, device: "mac-a" });
 	assert.ok(nextDay.includes(join("reports", "daily", "2026-11-15.html")), "rebuilt for the new link");
 	assert.match(page("2026-11-15"), /href="\.\.\/daily\/2026-11-16\.html">2026-11-16 →/);
+});
+
+test("guardian run records reach the repo, the Guardian page and the period's Pipeline section; a re-run writes nothing", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "usage-ledger-"));
+	git(repo, "init", "--quiet");
+	const usage = () => ({ reports: [], history: [] });
+	const tz = "Europe/Berlin";
+	const later = Date.parse("2026-11-16T12:00:00.000Z");
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1), now: NOW, usage });
+	writeReports({ repo, now: later, tz, device: "mac-a" });
+	assert.equal(existsSync(join(repo, "reports", "guardian", "index.html")), false, "no ledger, no page");
+
+	const run = { type: "custom", customType: "guardian-run", data: { runId: "r1", startedAt: NOW - 3_000_000, costUsd: 1, mode: "orchestrated", orchestration: { runId: "o1", lane: "build", qaVerdicts: [] } } };
+	await collect({ repo, device: "mac-a", sessionsDir: sessions(1, [run]), now: NOW, usage });
+	assert.deepEqual(readRepo(repo).runs.map((r) => r.runId), ["r1"]);
+	const written = writeReports({ repo, now: later, tz, device: "mac-a" });
+	assert.ok(written.includes(join("reports", "guardian", "index.html")));
+	assert.ok(written.includes(join("reports", "daily", "2026-11-13.html")), "the ledger is part of the report's input hash");
+	assert.match(readFileSync(join(repo, "reports", "daily", "2026-11-13.html"), "utf8"), /<h2>Pipeline<\/h2>/);
+	assert.match(readFileSync(join(repo, "reports", "index.html"), "utf8"), /href="guardian\/index\.html"/);
+	assert.deepEqual(writeReports({ repo, now: later, tz, device: "mac-a" }), []);
 });

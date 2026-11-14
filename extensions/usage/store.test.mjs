@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { HOUR_MS } from "./parse.mjs";
-import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
+import { deviceName, readRepo, writeAccounts, writeFindings, writeImprovements, writeLimits, writeRows, writeRuns } from "./store.mjs";
 
 const DAY1 = Date.parse("2026-11-12T23:00:00.000Z");
 const row = (hour, sessionId, cost, extra = {}) => ({
@@ -85,4 +85,27 @@ test("labels: the root accounts.json wins over devices, and the first device in 
 test("deviceName keeps hosts apart that share a hostname", () => {
 	assert.equal(deviceName("Martins-MBP.local", "1f2e3d4c-aaaa\n"), "Martins-MBP-1f2e3d4c");
 	assert.notEqual(deviceName("mac", "11111111"), deviceName("mac", "22222222"));
+});
+
+test("run records merge by runId per day; free text is redacted; readRepo reads only the kinds asked for", () => {
+	const root = repo();
+	const dev = join(root, "devices", "mac-1");
+	const secret = "ghp_" + "a".repeat(36);
+	const orchestration = { reason: `token ${secret}`, replans: [{ from: "build", to: "plan", reason: secret }], loopBreaks: [{ level: "progress", reason: secret }] };
+	const run = { runId: "r1", startedAt: DAY1 + HOUR_MS, costUsd: 1, title: `fix ${secret}`, branch: "ABC-1", orchestration };
+	assert.equal(writeRuns(dev, [run]), 1);
+	assert.equal(writeRuns(dev, [{ ...run, costUsd: 2 }]), 1);
+	assert.equal(writeRuns(dev, [{ ...run, costUsd: 2 }]), 0, "unchanged content writes nothing");
+	writeFindings(dev, [{ id: "f1", runIds: ["r1"], foundAt: DAY1 + 2 * HOUR_MS, evidence: `B:1 ${secret}`, suggestion: "s" }]);
+	writeImprovements(dev, [{ id: "i1", date: DAY1 + 3 * HOUR_MS, decision: "applied", reason: "r", change: { summary: "x" } }]);
+	writeRows(dev, [row(DAY1, "s1", 1)]);
+
+	const all = readRepo(root);
+	assert.deepEqual(all.runs.map((r) => [r.runId, r.costUsd, r.device]), [["r1", 2, "mac-1"]]);
+	assert.doesNotMatch(JSON.stringify(all.runs), /ghp_a{36}/);
+	assert.doesNotMatch(JSON.stringify(all.findings), /ghp_a{36}/);
+	assert.equal(all.improvements[0].id, "i1");
+
+	const only = readRepo(root, { kinds: ["runs"] });
+	assert.deepEqual([only.runs.length, only.rows.length, only.findings.length], [1, 0, 0]);
 });

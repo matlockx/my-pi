@@ -7,6 +7,7 @@
 
 import { createHash } from "node:crypto";
 
+import { ledgerHashLines, NO_LEDGER, pipelineFigures } from "./ledger.mjs";
 import { COUNTERS, HOUR_MS, rowKey } from "./parse.mjs";
 import { durationOf, limitDelta, UNTRACKED_FACTOR, untrackedRatio } from "./report.mjs";
 
@@ -16,7 +17,7 @@ export const ALL_TIME = "alltime";
 /** Every report kind, in index order. */
 export const REPORT_KINDS = [...KINDS, ALL_TIME];
 /** Part of every report's input hash: bump it to rebuild all reports after a change to the figures or the page. */
-export const REPORT_VERSION = 6;
+export const REPORT_VERSION = 7;
 /** A period is reported this long after its end even when an active device has not synced since. */
 export const MAX_WAIT_MS = 24 * HOUR_MS;
 export const OTHER = "other";
@@ -141,7 +142,7 @@ const dataEnd = (period) => period.cutoff ?? period.end;
  * zone and REPORT_VERSION. Independent of the order of rows and snapshots, so every device that
  * pulled the same data computes the same value.
  */
-export function inputHash(period, rows, limits, labels, tz, hasNext = false) {
+export function inputHash(period, rows, limits, labels, tz, hasNext = false, ledger = undefined) {
 	// shortcut: the untracked-use median also reads up to 30 days of older data, not hashed here; a change there alone does not rebuild the report.
 	const from = previousPeriod(period, tz)?.start ?? period.start;
 	const inside = (t) => t >= from && t < dataEnd(period);
@@ -156,6 +157,7 @@ export function inputHash(period, rows, limits, labels, tz, hasNext = false) {
 		lines.push(JSON.stringify([s.device, s.account, s.limitId, s.recordedAt, s.usedFraction ?? null, s.resetsAt ?? null, s.label ?? null, s.window ?? null, s.durationMs ?? null]));
 	}
 	const named = [...accounts].filter((a) => Object.hasOwn(labels, a)).sort().map((a) => [a, labels[a]]);
+	lines.push(...ledgerHashLines(ledger, inside, dataEnd(period)));
 	const head = [REPORT_VERSION, tz, period.kind, period.key, period.cutoff ?? null, named, hasPrevious(period, rows, limits, tz), hasNext];
 	return createHash("sha256").update(JSON.stringify(head)).update(lines.sort().join("\n")).digest("hex");
 }
@@ -399,9 +401,10 @@ function periodLabel(period, tz) {
  * @param {{period: object, rows: any[], limits: any[], labels: Record<string, string>, tz: string,
  *   now: number, generator: string, hasNext?: boolean}} input rows and limits of every device, with
  *   `device`, covering the period, the previous period and the 30 days before now (closed-window
- *   medians); hasNext: the next period has a report to link to.
+ *   medians); hasNext: the next period has a report to link to; ledger (optional): run records,
+ *   findings and improvements of every device, for the Pipeline section.
  */
-export function digest({ period, rows, limits, labels, tz, now, generator, hasNext = false }) {
+export function digest({ period, rows, limits, labels, tz, now, generator, hasNext = false, ledger = NO_LEDGER }) {
 	const previous = previousPeriod(period, tz);
 	// A running period covers [start, cutoff); it is compared with the same length of the period before.
 	const window = { ...period, end: dataEnd(period) };
@@ -452,5 +455,6 @@ export function digest({ period, rows, limits, labels, tz, now, generator, hasNe
 		agents: sumBy(current, (r) => (r.agent === "main" ? "main sessions" : subagents)),
 		tokenMix: tokenMix(current),
 		devices: [...seen.keys()].sort().map((name) => ({ name, cost: current.filter((r) => r.device === name).reduce((s, r) => s + r.cost, 0), lastSeen: seen.get(name) })),
+		pipeline: pipelineFigures({ ...ledger, start: window.start, end: window.end }),
 	};
 }

@@ -61,7 +61,7 @@ function legend(names) {
 	return `<div class="legend">${names.map((n) => `<span><i class="sw ${seriesClass(names, n)}"></i>${esc(n)}</span>`).join("")}</div>`;
 }
 
-function card(title, sub, body, cls = "") {
+export function card(title, sub, body, cls = "") {
 	return `<section class="card ${cls}"><header><h2>${esc(title)}</h2>${sub ? `<p>${sub}</p>` : ""}</header>${body}</section>`;
 }
 
@@ -507,7 +507,7 @@ a.alltime b{font-size:18px}a.alltime span{color:var(--muted);font-size:13.5px}a.
 @media (max-width:560px){.hero h1{font-size:26px}.bar-row{grid-template-columns:110px 1fr 64px}}
 `;
 
-function shell(title, body, hash) {
+export function shell(title, body, hash) {
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">${hash ? `<meta name="usage-input" content="${esc(hash)}">` : ""}<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${esc(title)}</title><style>${CSS}</style></head>
@@ -540,6 +540,7 @@ export function renderReport(d, hash) {
 		isLong(d) ? dayGridCard(d) : "",
 		d.period.kind === "daily" ? "" : `<div class="grid2 row">${heatmapCard(d)}${d.period.kind === "monthly" ? calendarCard(d) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
 		sessionsCard(d),
+		pipelineSection(d.pipeline),
 		`<div class="grid3 row">${tokenCard(d)}${mixCard("Models", "Cost per model.", d.models)}${d.period.kind === "weekly" || isLong(d) ? mixCard("Devices", "Cost per device.", d.devices.map((v) => ({ name: v.name, value: v.cost })).filter((v) => v.value > 0)) : mixCard("Agents", "Main session versus subagents.", d.agents)}</div>`,
 		devicesFooter(d),
 	];
@@ -550,7 +551,7 @@ export function renderReport(d, hash) {
  * The index page; reports is { daily: [key…], weekly: […], monthly: […] }, newest first, and
  * running holds the report paths (`reportPath`) of periods still running.
  */
-export function renderIndex(reports, running = new Set()) {
+export function renderIndex(reports, running = new Set(), guardian = false) {
 	const columns = Object.entries(KIND_NAMES)
 		.filter(([kind]) => kind !== "alltime")
 		.map(([kind, name]) => {
@@ -563,8 +564,102 @@ export function renderIndex(reports, running = new Set()) {
 	const allTime = reports.alltime?.length
 		? `<a class="card alltime" href="alltime/${esc(reports.alltime[0])}.html"><div><b>All time</b><br><span>Everything since the first recorded request, summed and updated daily.</span></div><em>Open →</em></a>`
 		: "";
+	const guardianLink = guardian
+		? `<a class="card alltime" href="guardian/index.html"><div><b>Guardian</b><br><span>Improvement log with measured effects, and the open findings ranked by cost × recurrence.</span></div><em>Open →</em></a>`
+		: "";
 	return shell(
 		"Agent usage reports",
-		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly, monthly, yearly and all time. Running reports update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header>${allTime}<div class="index">${columns}</div>`,
+		`<header class="hero"><div class="eyebrow">Agent usage</div><h1>Reports</h1><nav><span>Daily, weekly, monthly, yearly and all time. Running reports update once a day; a report is rebuilt when a device adds data to its period.</span></nav></header>${allTime}${guardianLink}<div class="index">${columns}</div>`,
+	);
+}
+
+const row = (cells) => `<tr>${cells.map((c, i) => `<td${i ? ' class="num"' : ""}>${c}</td>`).join("")}</tr>`;
+const head = (cells) => `<thead><tr>${cells.map((c, i) => `<th${i ? ' class="num"' : ""}>${esc(c)}</th>`).join("")}</tr></thead>`;
+/** Table in the report style; cells are HTML. */
+export const table = (header, rows) => `<div class="scroll"><table class="sessions">${head(header)}<tbody>${rows.map(row).join("")}</tbody></table></div>`;
+
+const orDash = (v, f) => (v === undefined ? "–" : f(v));
+
+function laneTable(lanes) {
+	if (!lanes.length) return `<p class="muted">No orchestrated runs in this period.</p>`;
+	return table(["Lane", "Runs", "Cost", "QA first pass"], lanes.map((l) => [esc(l.lane), l.runs, money(l.cost), l.judged ? pct(l.passed / l.judged) : "–"]));
+}
+
+function pipelineFacts(p) {
+	const kv = (k, v) => `<div class="kv"><span>${esc(k)}</span><b>${esc(v)}</b><em></em></div>`;
+	const w = p.waste;
+	return [
+		kv("Prompts tracked", String(p.prompts)),
+		kv("Orchestrated cost", money(p.orchestratedCost)),
+		kv("Cost with the switch off", money(p.offCost)),
+		kv("Actual vs estimate", p.estimateRatio === undefined ? "no estimates" : `${p.estimateRatio.toFixed(2)}× the estimate (median)`),
+		kv("Loop breaks", String(p.loopBreaks)),
+		kv("Repeated reads · commands · failed tools · edit retries", `${w.repeatedReads} · ${w.repeatedCommands} · ${w.failedTools} · ${w.editRetries}`),
+	].join("");
+}
+
+const findingCell = (f) => `<b>${esc(f.category)}</b> · ${esc(f.suggestion)}<div class="sub">${esc(f.evidence)}</div>`;
+
+function improvementsBlock(improvements) {
+	if (!improvements.length) return `<p class="small"><a href="../guardian/index.html">Improvement log →</a></p>`;
+	const items = improvements.map((i) => `<li>${esc(i.decision)}: ${esc(i.change?.summary ?? "")}</li>`).join("");
+	return `<h3 class="minor">Improvements decided</h3><ul>${items}</ul><p class="small"><a href="../guardian/index.html">Improvement log and measured effects →</a></p>`;
+}
+
+function workItemsCard(items) {
+	if (!items.length) return "";
+	const rows = items.slice(0, 15).map((w) => [esc(w.id), w.prompts, esc(w.lanes.join(", ") || "–"), money(w.cost)]);
+	return card("Work items", "Cost per Jira key or GitHub issue (primary work item of each prompt).", table(["Work item", "Prompts", "Lanes", "Cost"], rows));
+}
+
+/**
+ * Pipeline section of a period report (ledger.mjs `pipelineFigures`): orchestrated runs by lane,
+ * cost per role, estimate accuracy, waste, open findings, improvements, and cost per work item.
+ * Empty without run records in the period.
+ */
+export function pipelineSection(p) {
+	if (!p?.prompts) return "";
+	const roles = p.roles.length ? `<h3 class="minor">Cost per role</h3>${bars(p.roles)}` : "";
+	const findings = p.openFindings.length
+		? `<h3 class="minor">Top open findings</h3>${table(["Finding", "Runs", "Severity"], p.openFindings.map((f) => [findingCell(f), f.recurrence, esc(f.severity)]))}`
+		: "";
+	const body = `<div class="grid2"><div>${laneTable(p.lanes)}${roles}</div><div>${pipelineFacts(p)}</div></div>${findings}${improvementsBlock(p.improvements)}`;
+	return `${card("Pipeline", "Orchestrator runs and the Guardian ledger: lanes, roles, estimates, waste and findings.", body)}${workItemsCard(p.workItems)}`;
+}
+
+const MIN_RUNS_NOTE = "5 runs per side needed";
+
+/** Measured effect of an improvement on the Guardian page (ledger.mjs `improvementEffect`). */
+export function effectCell(e) {
+	if (!e.enough) return `not enough data (${e.before} runs before, ${e.after} after; ${MIN_RUNS_NOTE})`;
+	const pass = (side) => orDash(side.firstPass, pct);
+	return `cost per run ${money(e.before.cost)} → ${money(e.after.cost)}; QA first pass ${pass(e.before)} → ${pass(e.after)} (${e.before.n} / ${e.after.n} runs)`;
+}
+
+function improvementRow(i, day) {
+	const where = [i.scope, i.project, i.reason].filter(Boolean).map(esc).join(" · ");
+	return [esc(day(i.date)), esc(i.decision), `${esc(i.change?.summary ?? "")}<div class="sub">${where}</div>`, esc((i.findingIds ?? []).join(", ") || "–"), esc(effectCell(i.effect))];
+}
+
+function openFindingRow(f) {
+	const ref = [f.id, f.evidence, f.project].filter(Boolean).map(esc).join(" · ");
+	return [`<b>${esc(f.category)}</b> · ${esc(f.suggestion)}<div class="sub">${ref}</div>`, esc(f.scope), esc(f.severity), f.recurrence, orDash(f.estSavingUsd, money)];
+}
+
+/**
+ * The Guardian page: every improvement decision with the findings behind it and its measured
+ * effect, then the open findings ranked by cost × recurrence. Input prepared by collect.mjs:
+ * `{ improvements: [{ ...decision, effect }], open: [finding summary], generatedAt, tz }`.
+ */
+export function renderGuardian({ improvements, open, generatedAt, tz }, hash) {
+	const day = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, day: "numeric", month: "short", year: "numeric" }).format(ms);
+	const log = improvements.length
+		? table(["Date", "Decision", "Change", "Findings", "Measured effect"], [...improvements].reverse().map((i) => improvementRow(i, day)))
+		: `<p class="muted">No improvement decided yet. Run /orchestrate-retro in an omp session.</p>`;
+	const findings = open.length ? table(["Finding", "Scope", "Severity", "Runs", "Est. saving"], open.map(openFindingRow)) : `<p class="muted">No open findings.</p>`;
+	return shell(
+		"Guardian · improvement log",
+		`<header class="hero"><div class="eyebrow">Agent usage · Guardian</div><h1>Improvement log</h1><nav><a href="../index.html">All reports</a><span>Updated ${esc(day(generatedAt))}</span></nav></header>${card("Improvements", "Retro decisions and their effect: runs before and after the decision (pipeline changes), or the project's runs before and after (task changes).", log)}${card("Open findings", "Ranked by estimated saving (or severity) × the number of runs they were seen in.", findings)}`,
+		hash,
 	);
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { digest, periodOf } from "./digest.mjs";
-import { niceMax, plain, renderIndex, renderReport } from "./page.mjs";
+import { effectCell, niceMax, pipelineSection, plain, renderGuardian, renderIndex, renderReport } from "./page.mjs";
 import { HOUR_MS } from "./parse.mjs";
 
 const TZ = "Europe/Berlin";
@@ -107,4 +107,66 @@ test("plain drops icon glyphs, niceMax rounds axis tops up", () => {
 	assert.equal(plain("\uE75C JIRA: find"), "JIRA: find");
 	assert.equal(plain("🧾 TAX"), "🧾 TAX", "emoji stay");
 	assert.deepEqual([niceMax(0), niceMax(87), niceMax(441), niceMax(2.1)], [1, 100, 500, 2.5]);
+});
+
+test("the report shows the Pipeline section and work items only when the period has run records", () => {
+	const input = { period, rows: [row("t", "shop")], limits: [], labels: {}, tz: TZ, now: period.end + HOUR_MS, generator: "mac" };
+	assert.doesNotMatch(renderReport(digest(input), "h"), /<h2>Pipeline<\/h2>/);
+	const run = {
+		runId: "p1",
+		startedAt: period.start + HOUR_MS,
+		costUsd: 6,
+		mode: "orchestrated",
+		workItems: [{ id: "ABC-1", primary: true }],
+		perAgent: [{ role: "implementer", costUsd: 6 }],
+		orchestration: { runId: "o1", lane: "quick", qaVerdicts: [], outcome: "applied" },
+	};
+	const html = renderReport(digest({ ...input, ledger: { runs: [run], findings: [], improvements: [] } }), "h");
+	assert.match(html, /<h2>Pipeline<\/h2>/);
+	assert.match(html, /<td>quick<\/td><td class="num">1<\/td><td class="num">\$6\.00<\/td>/);
+	assert.match(html, /<h2>Work items<\/h2>[\s\S]*ABC-1/);
+	assert.match(html, /href="\.\.\/guardian\/index\.html"/);
+});
+
+test("the Guardian page lists decisions with their effect, open findings escaped, and the index links it", () => {
+	const html = renderGuardian(
+		{
+			improvements: [{ date: period.start, decision: "applied", scope: "pipeline", change: { summary: "QA on Haiku <fast>" }, findingIds: ["f1"], effect: { enough: false, before: 2, after: 0 } }],
+			open: [{ id: "f2", category: "navigation", suggestion: "pointer", evidence: "B:1", scope: "task", severity: "MED", recurrence: 3 }],
+			generatedAt: period.end,
+			tz: TZ,
+		},
+		"hash",
+	);
+	assert.match(html, /QA on Haiku &lt;fast&gt;/);
+	assert.match(html, /not enough data \(2 runs before, 0 after/);
+	assert.match(html, /<b>navigation<\/b> · pointer/);
+	assert.match(renderIndex({}, new Set(), true), /href="guardian\/index\.html"/);
+	assert.doesNotMatch(renderIndex({}, new Set(), false), /guardian\/index\.html/);
+});
+
+test("Guardian page rows: project and reason under the change, measured effect, saving or a dash", () => {
+	const html = renderGuardian(
+		{
+			improvements: [{ date: period.start, decision: "applied", scope: "task", project: "api", reason: "fewer rereads", findingIds: [], effect: { enough: true, before: { cost: 4, firstPass: 0.5, n: 6 }, after: { cost: 3, firstPass: undefined, n: 5 } } }],
+			open: [{ id: "f", category: "c", suggestion: "s", evidence: "e", scope: "task", severity: "LOW", recurrence: 1, estSavingUsd: 2 }],
+			generatedAt: period.end,
+			tz: TZ,
+		},
+		"h",
+	);
+	assert.match(html, /<div class="sub">task · api · fewer rereads<\/div>/);
+	assert.match(html, /cost per run \$4\.00 → \$3\.00; QA first pass 50% → – \(6 \/ 5 runs\)/);
+	assert.match(html, /<td class="num">\$2\.00<\/td>/);
+	assert.match(renderGuardian({ improvements: [], open: [], generatedAt: period.end, tz: TZ }, "h"), /No improvement decided yet[\s\S]*No open findings/);
+	assert.equal(effectCell({ enough: false, before: 1, after: 2 }), "not enough data (1 runs before, 2 after; 5 runs per side needed)");
+});
+
+test("pipelineSection without orchestrated runs or findings still shows the facts and the log link", () => {
+	assert.equal(pipelineSection(undefined), "");
+	const html = pipelineSection({ prompts: 2, lanes: [], roles: [], openFindings: [], improvements: [], workItems: [], orchestratedCost: 0, offCost: 3, loopBreaks: 0, waste: { repeatedReads: 1, repeatedCommands: 0, failedTools: 0, editRetries: 0 } });
+	assert.match(html, /No orchestrated runs in this period/);
+	assert.match(html, /no estimates/);
+	assert.match(html, /Improvement log →/);
+	assert.doesNotMatch(html, /Work items|Top open findings|Cost per role/);
 });

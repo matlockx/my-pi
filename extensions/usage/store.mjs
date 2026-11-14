@@ -16,6 +16,7 @@ import { join } from "node:path";
 
 import { redactString } from "../secret-redactor/redact.ts";
 import { rowKey } from "./parse.mjs";
+import { findingKey } from "./ledger.mjs";
 
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
@@ -60,6 +61,18 @@ export function mergeByKey(stored, fresh, keyOf) {
 	const merged = new Map(stored.map((i) => [keyOf(i), i]));
 	for (const item of fresh) merged.set(keyOf(item), item);
 	return [...merged.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, i]) => i);
+}
+
+/**
+ * Stored ledger items merged with the ones read live from this device's logs: a live item replaces
+ * the stored copy of the same id. Stored items cover other devices and pruned logs.
+ */
+export function mergeLedgers(stored, live) {
+	return {
+		runs: mergeByKey(stored.runs, live.runs, (r) => r.runId),
+		findings: mergeByKey(stored.findings, live.findings, findingKey),
+		improvements: mergeByKey(stored.improvements, live.improvements, (i) => i.id),
+	};
 }
 
 /**
@@ -118,6 +131,37 @@ export function writeLimits(deviceDir, snapshots) {
 	return mergeDays(join(deviceDir, "limits"), snapshots, (s) => s.recordedAt, limitKey);
 }
 
+// DEV-NOTE: replan reasons come from the Lead and progress breaks can quote QA findings, so every reason is free text.
+const withReasons = (list) => (Array.isArray(list) ? list.map((x) => ({ ...x, reason: redact(x.reason) })) : list);
+const cleanOrchestration = (o) => ({ ...o, reason: redact(o.reason), replans: withReasons(o.replans), loopBreaks: withReasons(o.loopBreaks) });
+
+const redact = (text) => (text === undefined || text === null ? text : redactString(String(text)).text);
+
+/** Stores run records for a device, one per runId; free text passes the secret redactor. */
+export function writeRuns(deviceDir, runs) {
+	const clean = runs.map((r) => ({
+		...r,
+		title: redact(r.title),
+		project: redact(r.project),
+		branch: redact(r.branch),
+		ratingNote: redact(r.ratingNote),
+		...(r.orchestration ? { orchestration: cleanOrchestration(r.orchestration) } : {}),
+	}));
+	return mergeDays(join(deviceDir, "runs"), clean, (r) => r.startedAt, (r) => r.runId);
+}
+
+/** Stores Guardian findings for a device, one row per sighting; evidence and suggestion are redacted. */
+export function writeFindings(deviceDir, findings) {
+	const clean = findings.map((f) => ({ ...f, project: redact(f.project), evidence: redact(f.evidence), suggestion: redact(f.suggestion) }));
+	return mergeDays(join(deviceDir, "findings"), clean, (f) => f.foundAt, findingKey);
+}
+
+/** Stores improvement decisions for a device, one per id; summary and reason are redacted. */
+export function writeImprovements(deviceDir, improvements) {
+	const clean = improvements.map((i) => ({ ...i, reason: redact(i.reason), change: { ...i.change, summary: redact(i.change?.summary) } }));
+	return mergeDays(join(deviceDir, "improvements"), clean, (i) => i.date, (i) => i.id);
+}
+
 function readJson(path) {
 	try {
 		return JSON.parse(readFileSync(path, "utf8"));
@@ -145,42 +189,53 @@ function listDir(dir) {
 	}
 }
 
+// Kinds of stored items: directory under the device, key in readRepo's result, item time.
+const KINDS = [
+	["hourly", "rows", (r) => r.hour],
+	["limits", "limits", (s) => s.recordedAt],
+	["runs", "runs", (r) => r.startedAt],
+	["findings", "findings", (f) => f.foundAt],
+	["improvements", "improvements", (i) => i.date],
+];
+
+// Items of one device directory of one kind whose time falls in [since, until).
+function readKind(dir, timeOf, since, until) {
+	const firstDay = dayOf(Math.max(0, since));
+	const lastDay = until >= 8.64e15 ? "9999-12-31" : dayOf(until);
+	const days = listDir(dir).filter((name) => {
+		const day = DAY_FILE.exec(name)?.[1];
+		return day && day >= firstDay && day <= lastDay;
+	});
+	return days.flatMap((name) => readJsonl(join(dir, name))).filter((item) => timeOf(item) >= since && timeOf(item) < until);
+}
+
+// Account labels: the root accounts.json wins, then device files in name order.
+// Spread, not Object.assign: a "__proto__" key in a repo file must stay a plain key.
+function readLabels(repo, devices) {
+	let labels = {};
+	for (const device of [...devices].reverse()) labels = { ...labels, ...readJson(join(repo, "devices", device, "accounts.json")) };
+	return { ...labels, ...readJson(join(repo, "accounts.json")) };
+}
+
 /**
  * Reads every device of the repository.
  *
  * @param {string} repo
- * @param {{since?: number, until?: number, excludeDevice?: string}} [range] Rows whose hour and
- *   snapshots whose recordedAt fall in [since, until) are returned.
- * @returns {{rows: any[], limits: any[], labels: Record<string, string>}} Rows and snapshots carry
- *   their `device`. Labels: the root accounts.json wins, then device files in name order.
+ * @param {{since?: number, until?: number, excludeDevice?: string, kinds?: string[]}} [range] Items
+ *   whose time falls in [since, until) are returned; `kinds` limits the reading to those keys.
+ * @returns {{rows: any[], limits: any[], labels: Record<string, string>, runs: any[], findings: any[],
+ *   improvements: any[]}} Items carry their `device`. Labels: the root accounts.json wins, then device
+ *   files in name order.
  */
-export function readRepo(repo, { since = 0, until = Number.MAX_SAFE_INTEGER, excludeDevice } = {}) {
-	const rows = [];
-	const limits = [];
-	let labels = {};
+export function readRepo(repo, { since = 0, until = Number.MAX_SAFE_INTEGER, excludeDevice, kinds } = {}) {
+	const out = { rows: [], limits: [], runs: [], findings: [], improvements: [] };
 	const devices = listDir(join(repo, "devices"));
-	const firstDay = dayOf(Math.max(0, since));
-	const lastDay = until >= 8.64e15 ? "9999-12-31" : dayOf(until);
-	// Spread, not Object.assign: a "__proto__" key in a repo file must stay a plain key.
-	for (const device of [...devices].reverse()) labels = { ...labels, ...readJson(join(repo, "devices", device, "accounts.json")) };
-	labels = { ...labels, ...readJson(join(repo, "accounts.json")) };
-	for (const device of devices) {
-		if (device === excludeDevice) continue;
-		for (const [sub, out, timeOf] of [
-			["hourly", rows, (r) => r.hour],
-			["limits", limits, (s) => s.recordedAt],
-		]) {
-			const dir = join(repo, "devices", device, sub);
-			for (const name of listDir(dir)) {
-				const day = DAY_FILE.exec(name)?.[1];
-				if (!day || day < firstDay || day > lastDay) continue;
-				for (const item of readJsonl(join(dir, name))) {
-					const t = timeOf(item);
-					if (t >= since && t < until) out.push({ ...item, device });
-				}
-			}
+	const wanted = KINDS.filter(([, key]) => !kinds || kinds.includes(key));
+	for (const device of devices.filter((d) => d !== excludeDevice)) {
+		for (const [sub, key, timeOf] of wanted) {
+			for (const item of readKind(join(repo, "devices", device, sub), timeOf, since, until)) out[key].push({ ...item, device });
 		}
 	}
-	return { rows, limits, labels };
+	return { ...out, labels: readLabels(repo, devices) };
 }
 

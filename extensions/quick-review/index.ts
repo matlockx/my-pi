@@ -13,6 +13,7 @@
  */
 
 import type {
+	BeforeAgentStartEventResult,
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -23,6 +24,10 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { appendSystemPrompt } from "../shared/system-prompt.mjs";
+import { registry } from "../guardian/registry.mjs";
+import { quickReviewStandsDown } from "../orchestrator/state.mjs";
+import { agentOf } from "../shared/agent.mjs";
 import {
 	commandDirs,
 	fixDecision,
@@ -176,6 +181,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// DEV-NOTE: in orchestrator mode QA reviews every Builder round and the Lead cannot edit, so
+	// quick-review stands down in the Lead and the orchestrator agents (orchestrator spec, QA).
+	const standsDown = (ctx: ExtensionContext) => quickReviewStandsDown(registry().mode, agentOf(ctx));
+
 	// DEV-NOTE: the session directory is not where the work necessarily happened — a turn
 	// that runs `cd ../other-service` edits a second repository, whose changes are the ones
 	// worth reviewing. Every repository the turn reached into is fingerprinted together, so
@@ -199,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (event.toolName !== "bash") return undefined;
+		if (event.toolName !== "bash" || standsDown(ctx)) return undefined;
 		for (const dir of commandDirs(event.input.command as string)) {
 			if (touchedDirs.size >= MAX_TRACKED_DIRS) break;
 			touchedDirs.add(resolve(ctx.cwd, dir.replace(/^~(?=\/|$)/, homedir())));
@@ -370,6 +379,7 @@ export default function (pi: ExtensionAPI) {
 	// loop, so the baseline was re-taken after the edits and every agent_end compared the
 	// tree against itself ("no-edits", never a review). agent_start fires once per loop.
 	pi.on("agent_start", async (_event, ctx) => {
+		if (standsDown(ctx)) return;
 		if (phase === "idle") count = 0;
 		baseline = await diffFingerprint(ctx.cwd);
 		status(ctx);
@@ -382,6 +392,7 @@ export default function (pi: ExtensionAPI) {
 		// DEV-NOTE: sendUserMessage starts another agent loop, which ends in this same
 		// handler. `phase` routes those echoes; the fingerprint set and the budget in
 		// gate.mjs stop a review/fix ping-pong from looping indefinitely.
+		if (standsDown(ctx)) return;
 		if (phase === "reviewing") {
 			phase = "idle";
 			detach(
@@ -460,8 +471,8 @@ export default function (pi: ExtensionAPI) {
 	// a turn that follows it ends with the verdict above its summary and is left alone, a
 	// turn that ignores it is reviewed the hard way. The directive is withheld inside the
 	// review/fix cycle, where a turn reviewing itself would nest a review in a review.
-	pi.on("before_agent_start", async (event) => {
-		if (!shouldSelfReview({ disabled, phase })) return undefined;
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (standsDown(ctx) || !shouldSelfReview({ disabled, phase })) return undefined;
 		// DEV-NOTE: an unreadable prompt file costs the self-review, not the turn — the
 		// agent_end gate still reviews the changes the hard way.
 		let checklist: string;
@@ -470,9 +481,11 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			return undefined;
 		}
+		const base: unknown = event.systemPrompt;
+		// DEV-NOTE: pi's typings say string; omp passes an array of blocks (appendSystemPrompt).
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${SELF_REVIEW_DIRECTIVE}${checklist}`,
-		};
+			systemPrompt: appendSystemPrompt(base, `${SELF_REVIEW_DIRECTIVE}${checklist}`),
+		} as unknown as BeforeAgentStartEventResult;
 	});
 
 	pi.on("session_start", async (_event, ctx) => status(ctx));

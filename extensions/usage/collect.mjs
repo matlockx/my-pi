@@ -15,15 +15,17 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { digest, inputHash, isReady, lastSeen, localParts, nextPeriod, REPORT_KINDS, reportPeriods } from "./digest.mjs";
-import { renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
+import { findingSummaries, improvementEffect, rankOpen } from "./ledger.mjs";
+import { renderGuardian, renderIndex, renderReport, reportPath, storedHash } from "./page.mjs";
 import { accountHash, scanSessions } from "./parse.mjs";
-import { deviceName, readRepo, writeAccounts, writeLimits, writeRows } from "./store.mjs";
+import { deviceName, readRepo, writeAccounts, writeFindings, writeImprovements, writeLimits, writeRows, writeRuns } from "./store.mjs";
 
 const RESCAN_MS = 2 * 24 * 3_600_000;
 // All of omp's usage_history: `omp usage --history` accepts any day count and returns what it has.
@@ -158,8 +160,11 @@ export async function collect({ repo, device, sessionsDir, now, usage, backfill 
 	const changed =
 		writeRows(deviceDir, resolveUnpinned(scan.rows, byProvider)) +
 		writeLimits(deviceDir, snapshots) +
+		writeRuns(deviceDir, scan.ledger.runs) +
+		writeFindings(deviceDir, scan.ledger.findings) +
+		writeImprovements(deviceDir, scan.ledger.improvements) +
 		(writeAccounts(deviceDir, labels) ? 1 : 0);
-	return { ...scan, rows: scan.rows.length, snapshots: snapshots.length, unmatched, changed };
+	return { ...scan, ledger: undefined, rows: scan.rows.length, runs: scan.ledger.runs.length, snapshots: snapshots.length, unmatched, changed };
 }
 
 function git(repo, args) {
@@ -244,7 +249,8 @@ function readIfExists(file) {
  * @returns {string[]} Paths written, relative to the repository.
  */
 export function writeReports({ repo, now, tz, device }) {
-	const { rows, limits, labels } = readRepo(repo);
+	const { rows, limits, labels, runs, findings, improvements } = readRepo(repo);
+	const ledger = { runs, findings, improvements };
 	let first = Number.POSITIVE_INFINITY;
 	for (const r of rows) first = Math.min(first, r.hour);
 	for (const s of limits) first = Math.min(first, s.recordedAt);
@@ -258,15 +264,37 @@ export function writeReports({ repo, now, tz, device }) {
 		const path = join("reports", reportPath(period));
 		const next = nextPeriod(period, tz);
 		const hasNext = Boolean(next) && planned.has(reportPath(next));
-		const hash = inputHash(period, rows, limits, labels, tz, hasNext);
+		const hash = inputHash(period, rows, limits, labels, tz, hasNext, ledger);
 		if (storedHash(readIfExists(join(repo, path))) === hash) continue;
 		mkdirSync(dirname(join(repo, path)), { recursive: true });
-		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device, hasNext }), hash));
+		writeFileSync(join(repo, path), renderReport(digest({ period, rows, limits, labels, tz, now, generator: device, hasNext, ledger }), hash));
 		written.push(path);
 	}
+	const guardian = writeGuardian(repo, ledger, now, tz);
+	if (guardian) written.push(guardian);
 	const running = new Set(periods.filter((p) => p.cutoff).map(reportPath));
-	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo), running));
+	if (written.length) writeFileSync(join(repo, "reports", "index.html"), renderIndex(listReports(repo), running, existsSync(join(repo, GUARDIAN_PAGE))));
 	return written;
+}
+
+const GUARDIAN_PAGE = join("reports", "guardian", "index.html");
+
+/**
+ * Writes `reports/guardian/index.html` when the ledger holds anything and the page was built from
+ * other data or on another local day (measured effects change as runs accrue). Returns its path
+ * relative to the repository when written.
+ */
+export function writeGuardian(repo, ledger, now, tz) {
+	if (!ledger.runs.length && !ledger.findings.length && !ledger.improvements.length) return undefined;
+	const improvements = [...ledger.improvements].sort((a, b) => a.date - b.date).map((i) => ({ ...i, effect: improvementEffect(i, ledger.runs) }));
+	const open = rankOpen(findingSummaries(ledger.findings, ledger.improvements)).slice(0, 50);
+	const today = localParts(now, tz);
+	const hash = createHash("sha256").update(JSON.stringify([today.y, today.m, today.d, improvements, open])).digest("hex");
+	const path = join(repo, GUARDIAN_PAGE);
+	if (storedHash(readIfExists(path)) === hash) return undefined;
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, renderGuardian({ improvements, open, generatedAt: now, tz }, hash));
+	return GUARDIAN_PAGE;
 }
 
 /**
@@ -311,7 +339,7 @@ async function main() {
 		if (reports.length || pushed !== "reports unchanged") outcome += `, ${reports.length} reports written, ${pushed}`;
 	}
 	console.log(
-		`${new Date().toISOString()} ${device}: ${result.files} logs, ${result.rows} rows, ` +
+		`${new Date().toISOString()} ${device}: ${result.files} logs, ${result.rows} rows, ${result.runs} runs, ` +
 			`${result.snapshots} snapshots (${result.unmatched} unmatched), ${result.changed} files changed, ${outcome}`,
 	);
 }

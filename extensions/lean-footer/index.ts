@@ -41,6 +41,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
+import { FOOTER_EVENT, footerOn, footerText } from "../orchestrator/state.mjs";
 import { routeLabel } from "./route.mjs";
 import { usageTotals } from "./usage.mjs";
 
@@ -85,6 +86,7 @@ const COL = {
 	ctxCrit: "240;110;110",
 	dim: "125;125;138", // chrome
 	route: "200;150;255", // provider/model · account
+	orchOn: "255;140;60", // orchestrator mode on — stands out
 };
 
 const fmt = (n: number): string =>
@@ -163,14 +165,27 @@ function routePart(ctx: Ctx): [string, string] {
 
 export default function leanFooter(pi: ExtensionAPI) {
 	let enabled = loadDefault();
+	// Orchestrator switch text (`orch: on|off`), sent by the orchestrator extension; undefined without it.
+	let orch: string | undefined;
+	let lastCtx: Ctx | undefined;
 
 	function publishStatus(ctx: Ctx) {
+		lastCtx = ctx;
 		const parts = [routePart(ctx), ...(enabled ? usageParts(ctx) : [])];
+		if (orch) parts.push([orch, c(footerOn(orch) ? COL.orchOn : COL.dim, orch, footerOn(orch))]);
 		ctx.ui.setWidget(
 			WIDGET_KEY,
 			[parts.map((p) => p[1]).join(" ")],
 			{ placement: "belowEditor" },
 		);
+	}
+
+	// DEV-NOTE: omp only; under pi the orchestrator's setStatus text reaches the footer's status line.
+	if (IS_OMP) {
+		pi.events.on(FOOTER_EVENT, (data) => {
+			orch = footerText(data);
+			if (lastCtx) publishStatus(lastCtx);
+		});
 	}
 
 	// DEV-NOTE: rebuilds the footer with per-field color families. Layout/

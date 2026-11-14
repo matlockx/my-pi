@@ -7,6 +7,7 @@
  * for GitHub Copilot. Providers do not publish how their limits count usage.
  */
 
+import { ledgerReport } from "./ledger.mjs";
 import { COUNTERS, HOUR_MS } from "./parse.mjs";
 
 export const GROUP_KEYS = ["account", "provider", "model", "session", "project", "agent", "feature", "device", "hour"];
@@ -226,4 +227,16 @@ export function buildReport({ rows, snapshots, labels, now, window, groupBy, pro
 		"Rows are hourly: requests in the hour that contains the window start count in. `~<limit>` columns " +
 		"estimate each group's part of the limit's increase by its share of API-equivalent cost (Copilot: premium requests).";
 	return [note, ...sections].join("\n\n") || "No usage recorded.";
+}
+
+const LEDGER_WINDOWS = { "5h": "last:5h", "7d": "last:7d" };
+
+/**
+ * `usage_report` text of a ledger view (ledger.mjs `ledgerReport`). The ledger has no per-account
+ * limit window, so 5h and 7d mean the last 5 hours or 7 days; the default window is 7d and the
+ * default grouping the work item.
+ */
+export function ledgerViewReport({ ledger, view, window = "7d", groupBy = ["workItem"], top, now }) {
+	const span = parseWindow(LEDGER_WINDOWS[window] ?? window, now);
+	return ledgerReport({ ...ledger, view, groupBy, since: span.since ?? 0, until: span.until, ...(top ? { top } : {}) });
 }

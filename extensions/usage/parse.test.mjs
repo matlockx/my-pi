@@ -171,3 +171,26 @@ test("hourlyRows sums per hour and counts subagents toward the root session and 
 		[HOUR_MS, "main", "jflow-watch", "Shop scope", "shop", "A", 1, 4],
 	]);
 });
+
+test("guardian entries land in the ledger: latest run record per runId, findings with their run ids", async () => {
+	const entry = (min, customType, data) => ({ type: "custom", timestamp: at(min), customType, data });
+	const { ledger, events } = parseEntries([
+		header(),
+		entry(1, "guardian-run", { runId: "r1", costUsd: 1 }),
+		entry(2, "guardian-run", { runId: "r1", costUsd: 1, rating: 4 }),
+		entry(3, "guardian-findings", { runIds: ["r1"], findings: [{ scope: "task", category: "navigation", severity: "MED", evidence: "B:1", suggestion: "s" }] }),
+		entry(4, "guardian-improvement", { id: "i1", decision: "applied" }),
+		entry(5, "other-extension", { runId: "x" }),
+	]);
+	assert.equal(events.length, 0, "custom entries are not requests");
+	assert.deepEqual(ledger.runs.map((r) => r.rating ?? null), [null, 4]);
+	assert.deepEqual(ledger.findings.map((f) => [f.runIds, f.category]), [[["r1"], "navigation"]]);
+	assert.deepEqual(ledger.improvements.map((i) => [i.id, i.date]), [["i1", T0 + 4 * 60_000]]);
+
+	const dir = mkdtempSync(join(tmpdir(), "usage-ledger-"));
+	mkdirSync(join(dir, "-shop"));
+	const lines = [header(), user(1, "x"), reply(2, 1), entry(3, "guardian-run", { runId: "r1", costUsd: 1 }), entry(4, "guardian-run", { runId: "r1", costUsd: 2 })];
+	writeFileSync(join(dir, "-shop", "2026-11-13T10-00-00-000Z_01a1a136-b5fd-77f9-8e1d-040fb9157988.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n"));
+	const scan = await scanSessions(dir);
+	assert.deepEqual(scan.ledger.runs.map((r) => [r.runId, r.costUsd, r.project]), [["r1", 2, "shop"]]);
+});
