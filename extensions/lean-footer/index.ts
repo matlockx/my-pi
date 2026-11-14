@@ -239,7 +239,7 @@ export default function leanFooter(pi: ExtensionAPI) {
 
 					const lines = [pwdLine, statsLine];
 
-					// line 3: extension statuses (caveman/lean/etc.) — keep dim chrome
+					// line 3: extension statuses (lean/review/etc.) — keep dim chrome
 					const statuses = footerData.getExtensionStatuses?.();
 					if (statuses && statuses.size > 0) {
 						const txt = Array.from(statuses.entries())
